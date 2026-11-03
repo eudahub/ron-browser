@@ -165,6 +165,19 @@ impl Sheets {
             .filter_map(|slot| slot.sheet.as_ref())
             .collect()
     }
+
+    /// Whether every `@media` condition comes out the same for views of these two sizes.
+    #[must_use]
+    pub fn hold_alike(&self, one: Viewport, other: Viewport) -> bool {
+        let alike = |media: &str| matches_media(media, one) == matches_media(media, other);
+        self.slots.iter().all(|slot| {
+            slot.media.as_deref().is_none_or(alike)
+                && slot
+                    .sheet
+                    .as_ref()
+                    .is_none_or(|sheet| sheet.media_queries.iter().all(|media| alike(media)))
+        })
+    }
 }
 
 /// Whether a location is an address over HTTPS.

@@ -120,6 +120,8 @@ private:
     std::unique_ptr<PageHolder> holder;
     QTimer *resizeTimer;
     int laidOutWidth = -1;
+    // How long the last layout took, which decides whether the next can come at once.
+    qint64 lastLayoutMs = 0;
     bool dragging = false;
     QPointF lastDragPosition;
     // For telling a third click from a new first one.

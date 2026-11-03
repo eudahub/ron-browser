@@ -74,6 +74,10 @@ const int arrivalPieceMs = 50;
 const size_t fastPieceBytes = 512 * 1024;
 // How long a page has to be at rest before its source is packed, which takes a moment on a large one.
 const int packAfterMs = 1000;
+// A layout that takes this long at most is done at each step of resizing the window.
+const qint64 maxLayoutInResizeMs = 33;
+// The longest a slower page waits for its next layout while the window is being resized.
+const qint64 maxResizeWaitMs = 500;
 // How often images may cause a new layout of a page that is still arriving, all of it each time.
 const qint64 minImageLayoutMs = 1000;
 // A page shows after this long without the style sheets that have not come by then.
@@ -782,7 +786,10 @@ void PageView::layOut()
 {
     if (holder->page) {
         const QSize size = viewport()->size();
+        QElapsedTimer took;
+        took.start();
         (*holder->page)->lay_out(static_cast<float>(size.width()), static_cast<float>(size.height()));
+        lastLayoutMs = took.elapsed();
         laidOutWidth = size.width();
         packTimer->start();
     }
@@ -810,8 +817,16 @@ void PageView::resizeEvent(QResizeEvent *event)
     QAbstractScrollArea::resizeEvent(event);
     updateScrollBars();
     // Lines only change with the width.
-    if (holder->page && viewport()->width() != laidOutWidth) {
-        resizeTimer->start();
+    if (!holder->page || viewport()->width() == laidOutWidth) {
+        return;
+    }
+    // A quick page follows the edge of the window. A slow one gets half of the time, and a timer
+    // left running, as starting it over at each step would hold it off as long as the edge moves.
+    if (lastLayoutMs <= maxLayoutInResizeMs) {
+        resizeTimer->stop();
+        layOut();
+    } else if (!resizeTimer->isActive()) {
+        resizeTimer->start(static_cast<int>(std::min<qint64>(lastLayoutMs, maxResizeWaitMs)));
     }
 }
 
