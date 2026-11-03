@@ -25,6 +25,13 @@ const int maxShownAddress = 300;
 const size_t arrivingPageBytes = 1024 * 1024;
 // How long the window stays with what the network gives, before it goes on with other things.
 const qint64 fetchEventsMs = 15;
+// What comes from the network goes to the page together this often, as each time takes work and a
+// new drawing. On a very fast network it goes sooner, as a large amount at once would hold up the
+// window: about 40 ms for each MB.
+const qint64 feedEveryMs = 100;
+const qsizetype feedEveryBytes = 512 * 1024;
+// How often the title and the status bar follow a page that is arriving.
+const qint64 statusEveryMs = 300;
 // Looking for a place goes over all of a page, so it is not done at every step.
 const qint64 placeTryMs = 300;
 
@@ -235,6 +242,7 @@ void MainWindow::stopFetch()
         fetchTimer->stop();
         pageFetch.reset();
         pageDecoder.reset();
+        waitingBytes.clear();
         view->dropIncomingPage();
         pageStatus.clear();
         statusBar()->clearMessage();
@@ -242,6 +250,7 @@ void MainWindow::stopFetch()
     } else if (view->isArriving()) {
         // Decides what the status says of it, as it ends here.
         if (pageDecoder) {
+            feedWaitingBytes();
             noteFetchedEncoding();
         }
         fetchTimer->stop();
@@ -269,19 +278,20 @@ void MainWindow::setArrivalSeconds(int seconds)
 
 void MainWindow::checkFetch()
 {
+    const qint64 bytesBefore = fetchedBytes;
     takeFetchEvents();
     const bool hadIncoming = view->hasIncomingPage();
     if (hadIncoming && view->incomingPageIsReady()) {
         showFetchedPage();
-    } else if (!hadIncoming && view->isArriving()) {
+    } else if (!hadIncoming && view->isArriving() && pageFetch && fetchedBytes != bytesBefore
+               && sinceStatus.elapsed() >= statusEveryMs) {
+        sinceStatus.start();
         const QString title = view->pageTitle();
         if (!title.isEmpty() && title != windowTitle()) {
             setWindowTitle(title);
         }
-        if (pageFetch) {
-            pageStatus = tr("Loading: %1 KB").arg(fetchedBytes / 1024);
-            statusBar()->showMessage(pageStatus);
-        }
+        pageStatus = tr("Loading: %1 KB").arg(fetchedBytes / 1024);
+        statusBar()->showMessage(pageStatus);
     }
     if (placeWaiting) {
         goOnToPlace();
@@ -295,15 +305,19 @@ void MainWindow::takeFetchEvents()
 {
     QElapsedTimer spent;
     spent.start();
-    while (pageFetch && spent.elapsed() < fetchEventsMs) {
+    while (pageFetch && spent.elapsed() < fetchEventsMs && waitingBytes.size() < feedEveryBytes) {
         ron_browser::FetchEvent event = (*pageFetch)->poll();
         if (event.kind == ron_browser::FetchEventKind::Nothing) {
-            return;
+            break;
         }
         if (!takeFetchEvent(std::move(event))) {
             pageFetch.reset();
             pageDecoder.reset();
+            waitingBytes.clear();
         }
+    }
+    if (!sinceFed.isValid() || sinceFed.elapsed() >= feedEveryMs || waitingBytes.size() >= feedEveryBytes) {
+        feedWaitingBytes();
     }
 }
 
@@ -321,6 +335,9 @@ bool MainWindow::takeFetchEvent(ron_browser::FetchEvent event)
             return false;
         }
         pageDecoder = ron_browser::new_stream_decoder(event.charset);
+        waitingBytes.clear();
+        sinceFed.invalidate();
+        sinceStatus.start();
         fetchedBytes = 0;
         fetchedAddress = address;
         fetchedStatus.clear();
@@ -329,8 +346,7 @@ bool MainWindow::takeFetchEvent(ron_browser::FetchEvent event)
     }
     case ron_browser::FetchEventKind::Data: {
         fetchedBytes += static_cast<qint64>(event.bytes.size());
-        const rust::String text = (*pageDecoder)->push({event.bytes.data(), event.bytes.size()});
-        view->feedFetched(text);
+        waitingBytes.append(reinterpret_cast<const char *>(event.bytes.data()), static_cast<qsizetype>(event.bytes.size()));
         return true;
     }
     case ron_browser::FetchEventKind::End:
@@ -356,8 +372,20 @@ bool MainWindow::takeFetchEvent(ron_browser::FetchEvent event)
     }
 }
 
+void MainWindow::feedWaitingBytes()
+{
+    if (!waitingBytes.isEmpty() && pageDecoder) {
+        const rust::String text = (*pageDecoder)->push(
+            {reinterpret_cast<const std::uint8_t *>(waitingBytes.constData()), static_cast<size_t>(waitingBytes.size())});
+        waitingBytes.clear();
+        view->feedFetched(text);
+        sinceFed.start();
+    }
+}
+
 void MainWindow::endFetchedPage(const QString &problem)
 {
+    feedWaitingBytes();
     const rust::String text = (*pageDecoder)->finish();
     view->feedFetched(text);
     noteFetchedEncoding();

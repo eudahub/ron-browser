@@ -58,6 +58,7 @@ private:
     bool takeFetchEvent(ron_browser::FetchEvent event);
     // Ends a page from the network that is there, with what has come of it.
     void endFetchedPage(const QString &problem);
+    void feedWaitingBytes();
     void noteFetchedEncoding();
     void showFetchedPage();
     // Goes to the place asked for, once a page has come as far.
@@ -91,6 +92,10 @@ private:
     std::optional<rust::Box<ron_browser::PageFetch>> pageFetch;
     std::optional<rust::Box<ron_browser::StreamDecoder>> pageDecoder;
     qint64 fetchedBytes = 0;
+    // What has come but not gone to the page yet: each time costs, so it goes together.
+    QByteArray waitingBytes;
+    QElapsedTimer sinceFed;
+    QElapsedTimer sinceStatus;
     // What to do when the page being read arrives: go to a place, adding to the history, or
     // return to how far down the page was, without adding.
     QString fetchFragment;

@@ -46,7 +46,7 @@ void giveBackFreeMemory()
 // How often more of an arriving page comes in, when it is made to take its time.
 const int arrivalPieceMs = 50;
 // How much of a large local page comes at a time, between which the window goes on.
-const size_t fastPieceBytes = 256 * 1024;
+const size_t fastPieceBytes = 512 * 1024;
 // How often images may cause a new layout of a page that is still arriving, all of it each time.
 const qint64 minImageLayoutMs = 1000;
 // A page shows after this long without the style sheets that have not come by then.
