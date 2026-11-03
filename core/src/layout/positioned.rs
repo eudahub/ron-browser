@@ -7,7 +7,8 @@
 //! and shift themselves, as `position: relative` on inline text does nothing yet.
 //!
 //! What draws above what is settled when drawing, from [`PaintLayer`]s, as the order of items also
-//! is that of the text. All layers count together, without stacking contexts within each other.
+//! is that of the text. What a box with a `z-index` holds stays together, so that nothing within it
+//! gets above or below what is around that box by a `z-index` of its own.
 
 use std::ops::Range;
 
@@ -27,6 +28,15 @@ pub(super) fn is_out_of_flow(style: &ComputedStyle) -> bool {
 fn goes_above(style: &ComputedStyle) -> bool {
     (style.position != Position::Static && style.position != Position::Sticky)
         || style.transform.is_some()
+        || style.opacity < 1.0
+}
+
+/// Whether what a box holds stays together when drawing, in what is known as a stacking context.
+fn keeps_together(style: &ComputedStyle) -> bool {
+    (goes_above(style) && style.z_index.is_some())
+        || style.position == Position::Fixed
+        || style.transform.is_some()
+        || style.opacity < 1.0
 }
 
 /// How far a box of this size is moved by its `transform`. Percentages are of its own size.
@@ -52,7 +62,11 @@ pub struct PaintLayer {
     end: u32,
     /// Whether it draws above what is not positioned, or below if it asks for a negative `z-index`.
     positioned: bool,
+    /// Whether what it holds stays together when drawing.
+    keeps_together: bool,
     z_index: i32,
+    /// Its place in the order of drawing, for what it holds apart from further such layers.
+    rank: u32,
     /// How much of what it holds shows. Images only show or do not, as the toolkit is not told.
     opacity: f32,
     /// The item that holds the box that this range is cut off by, which moves along with the rest.
@@ -126,7 +140,7 @@ impl Layout {
                 })
                 .collect();
         }
-        let mut kept: Vec<((i8, i32), VisibleItem)> = Vec::new();
+        let mut kept: Vec<(u32, VisibleItem)> = Vec::new();
         for (index, item) in within {
             if let Some(found) = self.painted(index, *item) {
                 kept.push(found);
@@ -137,7 +151,7 @@ impl Layout {
     }
 
     /// What an item comes to with all layers around it, and how far up it goes.
-    fn painted(&self, index: usize, mut item: Item) -> Option<((i8, i32), VisibleItem)> {
+    fn painted(&self, index: usize, mut item: Item) -> Option<(u32, VisibleItem)> {
         let at = u32::try_from(index).unwrap_or(u32::MAX);
         let mut clip = None;
         let after = self.paint_layers.partition_point(|layer| layer.start <= at);
@@ -157,7 +171,7 @@ impl Layout {
                     }
                 }
                 if rank.is_none() && current.positioned {
-                    rank = Some((if current.z_index < 0 { -1 } else { 1 }, current.z_index));
+                    rank = Some(current.rank);
                 }
                 if let Some(area_marker) = current.clip {
                     let area = self.items.get(area_marker as usize)?;
@@ -170,7 +184,10 @@ impl Layout {
                 .parent
                 .map(|parent| &self.paint_layers[parent as usize]);
         }
-        Some((rank.unwrap_or((0, 0)), VisibleItem { index, item, clip }))
+        Some((
+            rank.unwrap_or(self.page_paint_rank),
+            VisibleItem { index, item, clip },
+        ))
     }
 }
 
@@ -237,8 +254,9 @@ fn cut(item: &mut Item, area: &Item, clip: &mut Option<ClipArea>) -> bool {
     true
 }
 
-/// Puts layers in order, and finds which is within which, as ranges either nest or stand apart.
-pub(super) fn order_layers(layers: &mut [PaintLayer]) {
+/// Puts layers in order, and finds which is within which, as ranges either nest or stand apart. Gives
+/// the place in the order of drawing of what is in none of them.
+pub(super) fn order_layers(layers: &mut [PaintLayer]) -> u32 {
     layers.sort_by_key(|layer| (layer.start, std::cmp::Reverse(layer.end)));
     let mut open: Vec<u32> = Vec::new();
     for index in 0..layers.len() {
@@ -252,13 +270,75 @@ pub(super) fn order_layers(layers: &mut [PaintLayer]) {
         layers[index].parent = open.last().copied();
         open.push(u32::try_from(index).unwrap_or(u32::MAX));
     }
+    rank_layers(layers)
+}
+
+/// What is left to do when going through what stays together, without recursion as pages can nest
+/// boxes deeply. `None` stands for the page, which all else is within.
+enum Step {
+    GoThrough(Option<usize>),
+    GiveRank(Option<usize>),
+}
+
+/// Settles the order of drawing. Within what stays together, first come negative `z-index`es, then
+/// what it holds that is not positioned, then the rest by `z-index`, in the order of the page where
+/// those are the same.
+fn rank_layers(layers: &mut [PaintLayer]) -> u32 {
+    // Those that belong directly to each that stays together, with the page coming last.
+    let mut members: Vec<Vec<usize>> = vec![Vec::new(); layers.len() + 1];
+    let mut around: Vec<Option<usize>> = Vec::with_capacity(layers.len());
+    for index in 0..layers.len() {
+        let of_parent = layers[index].parent.and_then(|parent| {
+            let parent = parent as usize;
+            if layers[parent].keeps_together {
+                Some(parent)
+            } else {
+                around[parent]
+            }
+        });
+        around.push(of_parent);
+        if layers[index].positioned {
+            members[of_parent.unwrap_or(layers.len())].push(index);
+        }
+    }
+    let mut steps = vec![Step::GoThrough(None)];
+    let mut next_rank = 0;
+    let mut page_rank = 0;
+    while let Some(step) = steps.pop() {
+        match step {
+            Step::GoThrough(which) => {
+                let mut held = std::mem::take(&mut members[which.unwrap_or(layers.len())]);
+                held.sort_by_key(|&member| layers[member].z_index);
+                // Last to be done goes first, as these are taken from the end.
+                let first_above = held.partition_point(|&member| layers[member].z_index < 0);
+                let of_member = |member: usize| {
+                    if layers[member].keeps_together {
+                        Step::GoThrough(Some(member))
+                    } else {
+                        Step::GiveRank(Some(member))
+                    }
+                };
+                steps.extend(held[first_above..].iter().rev().map(|&m| of_member(m)));
+                steps.push(Step::GiveRank(which));
+                steps.extend(held[..first_above].iter().rev().map(|&m| of_member(m)));
+            }
+            Step::GiveRank(which) => {
+                match which {
+                    Some(layer) => layers[layer].rank = next_rank,
+                    None => page_rank = next_rank,
+                }
+                next_rank += 1;
+            }
+        }
+    }
+    page_rank
 }
 
 impl Layouter<'_> {
     /// Notes where a box starts, if something is to be done with what it holds when it ends.
     pub(super) fn start_span(&mut self, style: &ComputedStyle) -> Option<Box<FrameSpan>> {
         let clips = cuts_off(style);
-        if !clips && !goes_above(style) && style.opacity >= 1.0 {
+        if !clips && !goes_above(style) {
             return None;
         }
         let mut span = Box::new(FrameSpan {
@@ -302,7 +382,13 @@ impl Layouter<'_> {
             start: u32::try_from(span.items).unwrap_or(u32::MAX),
             end,
             positioned: goes_above(style),
-            z_index: style.z_index.unwrap_or(0),
+            keeps_together: keeps_together(style),
+            z_index: if goes_above(style) {
+                style.z_index.unwrap_or(0)
+            } else {
+                0
+            },
+            rank: 0,
             opacity: style.opacity,
             clip: span
                 .clip_marker

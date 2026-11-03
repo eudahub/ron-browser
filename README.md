@@ -14,8 +14,9 @@ Grids show once all of them has come, and do not have `grid-auto-flow: column`, 
 named lines other than those of areas or subgrids. The `grid` shorthand only takes what `grid-template` does.
 `examples/grid.html` shows what they can do.
 
-Fixed boxes go by the first screen and scroll with the page, and sticky ones stay in the flow. All `z-index`
-values count together, without stacking contexts. Inline text cannot be shifted with `position: relative`,
+Fixed boxes go by the first screen and scroll with the page, and sticky ones stay in the flow. What a box with
+a `z-index` holds stays together when drawing, though a negative `z-index` within it goes below its background
+too. Inline text cannot be shifted with `position: relative`,
 or be what absolute boxes go by. `overflow: hidden` cuts off what goes beyond a box, but boxes that scroll
 show all they hold, as there is no way yet to scroll them. An absolute box shows once all of it has come.
 `examples/positioned.html` shows what they can do.

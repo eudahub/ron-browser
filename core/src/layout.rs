@@ -179,6 +179,8 @@ pub struct Layout {
     pub unplaced_link_areas: Option<u32>,
     /// Ranges of items that draw above others or are cut off, ordered by where they start.
     pub paint_layers: Vec<PaintLayer>,
+    /// Where what is in none of these comes in the order of drawing.
+    page_paint_rank: u32,
 }
 
 impl Layout {
@@ -572,7 +574,7 @@ pub fn layout_more(
         pending_boxes: layouter.pending_boxes,
         lowest_positioned: layouter.lowest_positioned,
     });
-    positioned::order_layers(&mut out.paint_layers);
+    out.page_paint_rank = positioned::order_layers(&mut out.paint_layers);
     out.width = out.width.max(width);
     if let Some(node) = canvas_node {
         let style = styles.get(node);
