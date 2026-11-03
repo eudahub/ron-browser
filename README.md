@@ -25,7 +25,10 @@ not followed at all. `<base>` is ignored for now.
 ## The network
 
 Pages, style sheets and images are read on threads of their own, so the window goes on. A new page
-shows once its style sheets have come, for at most 10 seconds, and images show as they arrive. HTTPS goes through [rustls](https://github.com/rustls/rustls), with the root certificates
+shows as it comes, once there is something to show and the style sheets named so far have come, for
+at most 10 seconds; until then the old page stays. It can be scrolled as far as it has come, and
+images show as they arrive. Stop keeps what has come so far. A page on the disk larger than 1 MB
+comes in pieces the same way. HTTPS goes through [rustls](https://github.com/rustls/rustls), with the root certificates
 built in, and a page with a bad certificate does not open: there is no way past it yet. Pages over
 plain HTTP do open, and the status bar says they are not secure.
 

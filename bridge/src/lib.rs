@@ -59,12 +59,6 @@ mod ffi {
         replaced: bool,
     }
 
-    /// An encoding found by looking at a page.
-    struct DetectedEncoding {
-        encoding: String,
-        certain: bool,
-    }
-
     /// What kind of place a link leads to.
     enum LinkKind {
         SamePage,
@@ -75,17 +69,44 @@ mod ffi {
         Refused,
     }
 
-    /// What has come of reading a page from the network.
-    struct FetchedPage {
-        /// False while it is still being read; the rest is empty until then.
-        done: bool,
+    /// What can happen with a page being read.
+    enum FetchEventKind {
+        /// Nothing new.
+        Nothing,
+        /// The server has answered.
+        Started,
+        /// The next piece has come.
+        Data,
+        End,
+        Failed,
+    }
+
+    /// Something that has happened with a page being read.
+    struct FetchEvent {
+        kind: FetchEventKind,
         /// What went wrong, or empty.
         error: String,
-        /// Where it really came from, after any redirects.
+        /// Where it really comes from, after any redirects.
         address: String,
         bytes: Vec<u8>,
         mime: String,
         charset: String,
+    }
+
+    /// How the encoding of a page was found.
+    enum EncodingSource {
+        ByteOrderMark,
+        Server,
+        Declared,
+        ValidUtf8,
+        Detected,
+        Uncertain,
+    }
+
+    /// The encoding found for a page.
+    struct ChosenEncoding {
+        encoding: String,
+        source: EncodingSource,
     }
 
     /// Where a link or a typed address leads.
@@ -156,10 +177,18 @@ mod ffi {
         /// Starts reading a page on a thread of its own. `asking_page` is the address of the page
         /// whose link it is, or empty when the user asks for it directly.
         fn start_page_fetch(address: &str, asking_page: &str) -> Box<PageFetch>;
-        fn poll(self: &mut PageFetch) -> FetchedPage;
+        fn poll(self: &mut PageFetch) -> FetchEvent;
 
-        /// Parses a page from this address on the network, without reading what it refers to.
-        fn open_fetched_page(utf8: String, address: &str, width: f32, height: f32) -> Box<Page>;
+        type StreamDecoder;
+
+        /// Starts turning a page into UTF-8 as it comes. `server_charset` is what the server says.
+        fn new_stream_decoder(server_charset: &str) -> Box<StreamDecoder>;
+        fn push(self: &mut StreamDecoder, piece: &[u8]) -> String;
+        fn finish(self: &mut StreamDecoder) -> String;
+        fn encoding(self: &StreamDecoder) -> ChosenEncoding;
+        fn replaced(self: &StreamDecoder) -> bool;
+        /// Finds the encoding of all of a page.
+        fn choose_encoding(bytes: &[u8]) -> ChosenEncoding;
 
         type SheetFetch;
 
@@ -179,14 +208,21 @@ mod ffi {
         fn feed(self: &mut Page, piece: &str);
         /// Ends such a page, and goes over all of it.
         fn finish_arriving(self: &mut Page);
+        /// Starts a page that arrives in pieces from this address on the network.
+        fn open_arriving_fetched_page(address: &str, width: f32, height: f32) -> Box<Page>;
+        fn is_arriving(self: &Page) -> bool;
+        /// Whether there is anything to show yet.
+        fn has_content(self: &Page) -> bool;
 
         type ImageFetch;
 
-        /// Starts reading the images of a page that came from this address.
-        fn start_image_fetch(self: &Page, page_address: &str) -> Box<ImageFetch>;
+        /// Starts reading the images of a page from this address that it has not named before.
+        fn start_image_fetch(self: &mut Page, page_address: &str) -> Box<ImageFetch>;
         /// Takes the images that have arrived, and tells whether there are any.
         fn take_images(self: &mut Page, fetch: &mut ImageFetch) -> bool;
         fn is_done(self: &mut ImageFetch) -> bool;
+        /// How many images it was started with.
+        fn requested(self: &ImageFetch) -> usize;
 
         type History;
 
@@ -201,12 +237,7 @@ mod ffi {
         fn current_fragment(self: &History) -> &str;
         fn current_scroll(self: &History) -> i32;
 
-        /// The charset a page declares in its first bytes, or an empty string.
-        fn declared_charset(bytes: &[u8]) -> String;
-        fn is_utf8(bytes: &[u8]) -> bool;
         fn is_known_encoding(encoding: &str) -> bool;
-        /// Finds the encoding of a page that does not declare one.
-        fn detect_encoding(bytes: &[u8]) -> DetectedEncoding;
         /// The bytes as UTF-8, with what is invalid replaced.
         fn decode_bytes(bytes: Vec<u8>, encoding: &str, skip_bom: bool) -> DecodedText;
         /// Reads a whole file, unless it is too large to open.
@@ -405,12 +436,18 @@ impl Page {
     }
 
     fn feed(&mut self, piece: &str) {
-        let mut no_resources = NoResources;
-        let loader: &mut dyn ResourceLoader = match &mut self.files {
-            Some(files) => files,
-            None => &mut no_resources,
-        };
-        self.page.feed(piece, loader, &mut QtMeasurer);
+        match &mut self.files {
+            Some(files) => self.page.feed(piece, files, &mut QtMeasurer),
+            None => self.page.feed_fetched(piece, &mut QtMeasurer),
+        }
+    }
+
+    fn is_arriving(&self) -> bool {
+        self.page.is_arriving()
+    }
+
+    fn has_content(&self) -> bool {
+        self.page.has_content()
     }
 
     fn finish_arriving(&mut self) {
@@ -422,13 +459,16 @@ impl Page {
         self.page.finish_arriving(loader, &mut QtMeasurer);
     }
 
-    fn start_image_fetch(&self, page_address: &str) -> Box<ImageFetch> {
-        let requests = net::image_requests(page_address, &self.page.image_sources());
-        Box::new(ImageFetch(net::ImageFetch::start(page_address, requests)))
+    fn start_image_fetch(&mut self, page_address: &str) -> Box<ImageFetch> {
+        let requests = net::image_requests(page_address, &self.page.new_image_sources());
+        Box::new(ImageFetch {
+            requested: requests.len(),
+            fetch: net::ImageFetch::start(page_address, requests),
+        })
     }
 
     fn take_images(&mut self, fetch: &mut ImageFetch) -> bool {
-        let images = fetch.0.poll();
+        let images = fetch.fetch.poll();
         let any = !images.is_empty();
         for (written, image) in images {
             self.page.add_image(&written, image);
@@ -503,9 +543,9 @@ fn start_page_fetch(address: &str, asking_page: &str) -> Box<PageFetch> {
 }
 
 impl PageFetch {
-    fn poll(&mut self) -> ffi::FetchedPage {
-        let mut result = ffi::FetchedPage {
-            done: false,
+    fn poll(&mut self) -> ffi::FetchEvent {
+        let mut result = ffi::FetchEvent {
+            kind: ffi::FetchEventKind::Nothing,
             error: String::new(),
             address: String::new(),
             bytes: Vec::new(),
@@ -514,15 +554,23 @@ impl PageFetch {
         };
         match self.0.poll() {
             None => {}
-            Some(Ok(fetched)) => {
-                result.done = true;
-                result.address = fetched.address;
-                result.bytes = fetched.bytes;
-                result.mime = fetched.mime;
-                result.charset = fetched.charset;
+            Some(net::PageEvent::Started {
+                address,
+                mime,
+                charset,
+            }) => {
+                result.kind = ffi::FetchEventKind::Started;
+                result.address = address;
+                result.mime = mime;
+                result.charset = charset;
             }
-            Some(Err(error)) => {
-                result.done = true;
+            Some(net::PageEvent::Data(bytes)) => {
+                result.kind = ffi::FetchEventKind::Data;
+                result.bytes = bytes;
+            }
+            Some(net::PageEvent::End) => result.kind = ffi::FetchEventKind::End,
+            Some(net::PageEvent::Failed(error)) => {
+                result.kind = ffi::FetchEventKind::Failed;
                 result.error = error.to_string();
             }
         }
@@ -530,12 +578,56 @@ impl PageFetch {
     }
 }
 
+/// Turns a page into text as it comes, in a type of this crate as the bridge requires.
+pub struct StreamDecoder(charset::StreamDecoder);
+
+fn new_stream_decoder(server_charset: &str) -> Box<StreamDecoder> {
+    Box::new(StreamDecoder(charset::StreamDecoder::new(server_charset)))
+}
+
+fn chosen_encoding(chosen: Option<&charset::ChosenEncoding>) -> ffi::ChosenEncoding {
+    use charset::EncodingSource as Source;
+    ffi::ChosenEncoding {
+        encoding: chosen.map_or_else(String::new, |chosen| chosen.encoding.clone()),
+        source: match chosen.map(|chosen| chosen.source) {
+            Some(Source::ByteOrderMark) => ffi::EncodingSource::ByteOrderMark,
+            Some(Source::Server) => ffi::EncodingSource::Server,
+            Some(Source::Declared) => ffi::EncodingSource::Declared,
+            Some(Source::ValidUtf8) | None => ffi::EncodingSource::ValidUtf8,
+            Some(Source::Detected) => ffi::EncodingSource::Detected,
+            Some(Source::Uncertain) => ffi::EncodingSource::Uncertain,
+        },
+    }
+}
+
+fn choose_encoding(bytes: &[u8]) -> ffi::ChosenEncoding {
+    chosen_encoding(Some(&charset::choose_encoding(bytes, "", true)))
+}
+
+impl StreamDecoder {
+    fn push(&mut self, piece: &[u8]) -> String {
+        self.0.push(piece)
+    }
+
+    fn finish(&mut self) -> String {
+        self.0.finish()
+    }
+
+    fn encoding(&self) -> ffi::ChosenEncoding {
+        chosen_encoding(self.0.chosen())
+    }
+
+    fn replaced(&self) -> bool {
+        self.0.replaced()
+    }
+}
+
 /// The style sheets of a page being read, in a type of this crate as the bridge requires.
 pub struct SheetFetch(net::SheetFetch);
 
-fn open_fetched_page(utf8: String, address: &str, width: f32, height: f32) -> Box<Page> {
+fn open_arriving_fetched_page(address: &str, width: f32, height: f32) -> Box<Page> {
     Box::new(Page {
-        page: page::Page::open_fetched(utf8, address, Viewport { width, height }),
+        page: page::Page::open_arriving_fetched(address, Viewport { width, height }),
         selection: None,
         files: None,
     })
@@ -550,11 +642,18 @@ fn open_arriving_page(directory: &str, width: f32, height: f32) -> Box<Page> {
 }
 
 /// The images of a page being read, in a type of this crate as the bridge requires.
-pub struct ImageFetch(net::ImageFetch);
+pub struct ImageFetch {
+    fetch: net::ImageFetch,
+    requested: usize,
+}
 
 impl ImageFetch {
     fn is_done(&mut self) -> bool {
-        self.0.is_done()
+        self.fetch.is_done()
+    }
+
+    fn requested(&self) -> usize {
+        self.requested
     }
 }
 
@@ -651,24 +750,8 @@ fn open_page(utf8: String, directory: &str, width: f32, height: f32) -> Box<Page
     })
 }
 
-fn declared_charset(bytes: &[u8]) -> String {
-    charset::declared(bytes).unwrap_or_default()
-}
-
-fn is_utf8(bytes: &[u8]) -> bool {
-    std::str::from_utf8(bytes).is_ok()
-}
-
 fn is_known_encoding(encoding: &str) -> bool {
     charset::is_known(encoding)
-}
-
-fn detect_encoding(bytes: &[u8]) -> ffi::DetectedEncoding {
-    let detected = charset::detect(bytes);
-    ffi::DetectedEncoding {
-        encoding: detected.encoding.to_owned(),
-        certain: detected.certain,
-    }
 }
 
 /// Larger files are refused, so that opening one cannot exhaust memory.

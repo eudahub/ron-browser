@@ -19,10 +19,15 @@ pub struct Page {
     viewport: Viewport,
     layout: Layout,
     images: ImageStore,
+    /// How many nodes have been looked at for [`Self::new_image_sources`].
+    images_named: usize,
+    images_asked_for: HashSet<String>,
 }
 
 /// What a page has while it is still coming in.
 struct Arriving {
+    /// Where it comes from, for one from the network.
+    address: Option<String>,
     parser: Parser,
     styles: StyleProgress,
     layout: LayoutProgress,
@@ -34,8 +39,9 @@ struct Arriving {
 }
 
 impl Arriving {
-    fn new() -> Self {
+    fn new(address: Option<String>) -> Self {
         Self {
+            address,
             parser: Parser::new(),
             styles: StyleProgress::new(),
             layout: LayoutProgress::default(),
@@ -54,11 +60,13 @@ impl Arriving {
 }
 
 /// Reads what a local page can get by itself. Each round brings what the sheets of the last one
-/// import, which has a limit. What can only come over HTTPS is left for later.
+/// import, which has a limit. What can only come over HTTPS is left for later, as is all for a page
+/// on the network.
 fn read_local_sheets(
     sheets: &mut Sheets,
     waiting: &mut Vec<SheetRequest>,
     loader: &mut dyn ResourceLoader,
+    on_network: bool,
 ) {
     loop {
         let requests = sheets.requests();
@@ -66,7 +74,7 @@ fn read_local_sheets(
             return;
         }
         for request in requests {
-            if is_https(&request.location) {
+            if on_network || is_https(&request.location) {
                 waiting.push(request);
             } else if let Some(bytes) = loader.load(&request.location) {
                 sheets.add(request.slot, &decode_css(&bytes, ""));
@@ -140,7 +148,7 @@ impl Page {
         let document = parse_owned(utf8.into());
         let mut waiting_sheets = Vec::new();
         let mut sheets = Sheets::of_document(&document, None);
-        read_local_sheets(&mut sheets, &mut waiting_sheets, loader);
+        read_local_sheets(&mut sheets, &mut waiting_sheets, loader, false);
         let styles = compute_styles(&document, &sheets.active(viewport), viewport);
         let mut page = Self {
             document,
@@ -151,6 +159,8 @@ impl Page {
             viewport,
             layout: Layout::default(),
             images,
+            images_named: 0,
+            images_asked_for: HashSet::new(),
         };
         page.load_images(loader);
         page
@@ -160,18 +170,72 @@ impl Page {
     /// scrolled after each [`Self::feed`], and only grows downwards.
     #[must_use]
     pub fn open_arriving(viewport: Viewport) -> Self {
+        Self::arriving_from(None, viewport)
+    }
+
+    /// Starts a page that arrives in pieces from this address on the network. All that it refers
+    /// to is read elsewhere: see [`Self::sheet_requests`] and [`Self::new_image_sources`].
+    #[must_use]
+    pub fn open_arriving_fetched(address: &str, viewport: Viewport) -> Self {
+        Self::arriving_from(Some(address.to_owned()), viewport)
+    }
+
+    fn arriving_from(address: Option<String>, viewport: Viewport) -> Self {
         let empty = Parser::new().into_document();
         let styles = Styles::unstyled(&empty);
         Self {
             document: empty,
-            arriving: Some(Arriving::new()),
+            arriving: Some(Arriving::new(address)),
             sheets: Sheets::default(),
             waiting_sheets: Vec::new(),
             styles,
             viewport,
             layout: Layout::default(),
             images: ImageStore::default(),
+            images_named: 0,
+            images_asked_for: HashSet::new(),
         }
+    }
+
+    /// The next piece of a page from the network.
+    pub fn feed_fetched(&mut self, piece: &str, measurer: &mut dyn TextMeasurer) {
+        let Some(arriving) = &mut self.arriving else {
+            return;
+        };
+        arriving.parser.feed(piece);
+        self.take_new_sheets(&mut NoResources);
+        self.go_on(None, measurer);
+    }
+
+    /// Whether there is anything to show yet.
+    #[must_use]
+    pub fn has_content(&self) -> bool {
+        !self.layout.items.is_empty()
+    }
+
+    /// What the page names as images and backgrounds that it has not named before.
+    pub fn new_image_sources(&mut self) -> Vec<String> {
+        let mut sources = Vec::new();
+        let nodes = self.tree().node_count();
+        for node in self.tree().nodes_from(self.images_named) {
+            let document = self.tree();
+            if document.kind(node) != NodeKind::Element {
+                continue;
+            }
+            if document.tag(node) == Tag::Img
+                && let Some(source) = document
+                    .attributes(node)
+                    .find(|attribute| attribute.name.eq_ignore_ascii_case("src"))
+            {
+                sources.push(source.decoded_value().into_owned());
+            }
+            if let Some(url) = &self.current_styles().get(node).background_image {
+                sources.push(url.to_string());
+            }
+        }
+        self.images_named = nodes;
+        sources.retain(|source| self.images_asked_for.insert(source.clone()));
+        sources
     }
 
     /// Whether more of the page is to come.
@@ -207,8 +271,20 @@ impl Page {
         };
         arriving.parser.finish();
         self.document = arriving.parser.into_document();
-        self.sheets.add_new_sources(&self.document, None);
-        read_local_sheets(&mut self.sheets, &mut self.waiting_sheets, loader);
+        self.sheets
+            .add_new_sources(&self.document, arriving.address.as_deref());
+        read_local_sheets(
+            &mut self.sheets,
+            &mut self.waiting_sheets,
+            loader,
+            arriving.address.is_some(),
+        );
+        // Styles change here, which can bring in further backgrounds.
+        self.images_named = 0;
+        // All this is worked out again, and two of each at once would take much more memory.
+        drop(arriving.styles);
+        drop(arriving.layout);
+        self.layout = Layout::default();
         self.styles = compute_styles(
             &self.document,
             &self.sheets.active(self.viewport),
@@ -244,9 +320,18 @@ impl Page {
             return;
         }
         arriving.sheet_to_read = None;
-        if self.sheets.add_new_sources(document, None) {
-            read_local_sheets(&mut self.sheets, &mut self.waiting_sheets, loader);
+        if self
+            .sheets
+            .add_new_sources(document, arriving.address.as_deref())
+        {
+            read_local_sheets(
+                &mut self.sheets,
+                &mut self.waiting_sheets,
+                loader,
+                arriving.address.is_some(),
+            );
             arriving.start_over();
+            self.images_named = 0;
             self.layout = Layout::default();
         }
     }
@@ -300,6 +385,8 @@ impl Page {
             viewport,
             layout: Layout::default(),
             images: ImageStore::default(),
+            images_named: 0,
+            images_asked_for: HashSet::new(),
         }
     }
 
@@ -326,6 +413,7 @@ impl Page {
         if let Some(arriving) = &mut self.arriving {
             // The next layout starts over too, with these styles.
             arriving.start_over();
+            self.images_named = 0;
             self.layout = Layout::default();
             return;
         }

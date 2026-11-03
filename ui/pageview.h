@@ -30,22 +30,30 @@ public:
     // Images load from `directory`, the one the page is in, and from nowhere else.
     void setPage(rust::String utf8, const QString &directory = QString());
     void clearPage();
-    // Shows a page from a file as it would come over a slow network, over this many seconds. It can
-    // be scrolled as far as it has come, and the range of the scroll bar only grows.
+    // Starts a large page from a file as the incoming page, which comes in pieces so that it shows
+    // long before all of it is there. With `seconds` it comes as over a slow network, taking that
+    // long; otherwise as fast as it can.
     void startArriving(rust::String utf8, const QString &directory, const QString &address, int seconds);
+    // The same for a page from the network, whose pieces come through feedFetched.
+    void beginFetchedArrival(const QString &address);
+    void feedFetched(rust::Str piece);
+    void endFetchedArrival();
+    // Whether more of a page, or the style sheets it waits for, is to come. It can be scrolled as
+    // far as it has come, and the range of the scroll bar only grows.
     bool isArriving() const;
     // Ends it here, with what has come so far.
     void stopArriving();
     // Opens a local page at this address. Returns whether it shows now; if it names style sheets
     // on the network, it becomes the incoming page instead.
     bool setLocalPage(rust::String utf8, const QString &directory, const QString &address);
-    // A page from the network waits unseen until its style sheets have come, or for long enough.
-    void prepareFetchedPage(rust::String utf8, const QString &address);
+    // An incoming page waits unseen, with what is shown staying, until it has something to show and
+    // its style sheets have come, or for long enough.
     bool hasIncomingPage() const;
     bool incomingPageIsReady();
     void showIncomingPage();
     void dropIncomingPage();
-    // Starts reading the images of a page that came from this address. They show as they arrive.
+    // Starts reading the images of a page from this address, also those named by what is still to
+    // come of it. They show as they arrive.
     void fetchImages(const QString &pageAddress);
     bool isLoadingImages() const;
     QString pageTitle() const;
@@ -88,9 +96,14 @@ protected:
 private:
     void takeImages();
     void forgetPage();
+    void forgetShownImages();
+    void dropArrival();
+    void beginArrival(const QString &address);
     void feedNextPiece();
     void takeArrivingSheets();
+    void startWaitingSheets();
     void finishArrival();
+    void endArrival();
     void showIncoming();
     QString linkAt(QPointF viewPosition) const;
     void setHoveredLink(const QString &address);
@@ -118,6 +131,12 @@ private:
     size_t bytesPerPiece = 0;
     QString incomingAddress;
     QElapsedTimer incomingWait;
+    // The size an arriving page has been laid out for.
+    QSize arrivalSize;
+    QString imageAddress;
+    // Images have come that wait for the next layout, of a page that is still arriving.
+    bool imagesWaiting = false;
+    QElapsedTimer sinceImageLayout;
     QString hoveredLink;
     // Where the left button went down on a link, for telling a click from a drag.
     QString pressedLink;

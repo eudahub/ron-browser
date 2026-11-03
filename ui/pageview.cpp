@@ -43,8 +43,12 @@ void giveBackFreeMemory()
 #endif
 }
 
-// How often more of an arriving page comes in.
+// How often more of an arriving page comes in, when it is made to take its time.
 const int arrivalPieceMs = 50;
+// How much of a large local page comes at a time, between which the window goes on.
+const size_t fastPieceBytes = 256 * 1024;
+// How often images may cause a new layout of a page that is still arriving, all of it each time.
+const qint64 minImageLayoutMs = 1000;
 // A page shows after this long without the style sheets that have not come by then.
 const qint64 maxSheetWaitMs = 10000;
 
@@ -55,9 +59,16 @@ struct PageView::PageHolder {
     std::optional<rust::Box<ron_browser::ImageFetch>> imageFetch;
     std::optional<rust::Box<ron_browser::Page>> incoming;
     std::optional<rust::Box<ron_browser::SheetFetch>> sheetFetch;
-    // All of a page that is arriving, of which arrivedBytes have been given to it.
+    // All of a page that is arriving from a file, of which arrivedBytes have been given to it.
     rust::String arrivingText;
+    // Whether the pieces come from outside, rather than from arrivingText.
+    bool arrivalIsFed = false;
+    // A page is arriving, or what it needs is, from when it starts to when it is complete.
+    bool arrivalActive = false;
+    // All of the page has come, though style sheets might not have.
     bool arrivalEnded = false;
+    // Whether the incoming page is one that comes in pieces, and so can show before it is complete.
+    bool incomingInPieces = false;
     // Each wraps the decoded pixels on the Rust side, without copying them.
     std::vector<std::optional<QImage>> images;
     std::vector<std::optional<QPixmap>> tiles;
@@ -92,6 +103,17 @@ struct PageView::PageHolder {
     {
         images.clear();
         tiles.clear();
+    }
+
+    // What is arriving: the page that shows, unless it is still coming unseen.
+    rust::Box<ron_browser::Page> &arrivingPage()
+    {
+        return incoming ? *incoming : *page;
+    }
+
+    bool hasArrivingPage() const
+    {
+        return arrivalActive && (incoming || page);
     }
 };
 
@@ -146,54 +168,107 @@ void PageView::clearPage()
     viewport()->update();
 }
 
+void PageView::beginArrival(const QString &address)
+{
+    holder->arrivalActive = true;
+    holder->arrivalEnded = false;
+    holder->incomingInPieces = true;
+    incomingAddress = address;
+    incomingWait.start();
+    arrivalSize = viewport()->size();
+    arrivalTimer->start();
+}
+
 void PageView::startArriving(rust::String utf8, const QString &directory, const QString &address, int seconds)
 {
-    forgetPage();
     const QByteArray path = directory.toUtf8();
     const QSize size = viewport()->size();
-    holder->page = ron_browser::open_arriving_page(rust::Str(path.constData(), static_cast<size_t>(path.size())),
-                                                   static_cast<float>(size.width()), static_cast<float>(size.height()));
+    holder->incoming = ron_browser::open_arriving_page(rust::Str(path.constData(), static_cast<size_t>(path.size())),
+                                                       static_cast<float>(size.width()), static_cast<float>(size.height()));
     holder->arrivingText = std::move(utf8);
-    holder->arrivalEnded = false;
+    holder->arrivalIsFed = false;
     arrivedBytes = 0;
-    const size_t pieces = std::max<size_t>(static_cast<size_t>(std::max(seconds, 1)) * 1000 / arrivalPieceMs, 1);
-    bytesPerPiece = std::max<size_t>(holder->arrivingText.size() / pieces, 1);
-    incomingAddress = address;
-    verticalScrollBar()->setValue(0);
-    horizontalScrollBar()->setValue(0);
-    setHoveredLink(QString());
-    pressedLink.clear();
-    laidOutWidth = size.width();
-    updateScrollBars();
-    viewport()->update();
-    arrivalTimer->start();
+    if (seconds > 0) {
+        const size_t pieces = std::max<size_t>(static_cast<size_t>(seconds) * 1000 / arrivalPieceMs, 1);
+        bytesPerPiece = std::max<size_t>(holder->arrivingText.size() / pieces, 1);
+        arrivalTimer->setInterval(arrivalPieceMs);
+    } else {
+        bytesPerPiece = fastPieceBytes;
+        arrivalTimer->setInterval(0);
+    }
+    beginArrival(address);
+}
+
+void PageView::beginFetchedArrival(const QString &address)
+{
+    const QByteArray bytes = address.toUtf8();
+    const QSize size = viewport()->size();
+    holder->incoming = ron_browser::open_arriving_fetched_page(rust::Str(bytes.constData(), static_cast<size_t>(bytes.size())),
+                                                               static_cast<float>(size.width()),
+                                                               static_cast<float>(size.height()));
+    holder->arrivalIsFed = true;
+    arrivalTimer->setInterval(arrivalPieceMs);
+    beginArrival(address);
+}
+
+void PageView::feedFetched(rust::Str piece)
+{
+    if (holder->hasArrivingPage() && !holder->arrivalEnded) {
+        holder->arrivingPage()->feed(piece);
+        startWaitingSheets();
+        if (!holder->incoming) {
+            updateScrollBars();
+            viewport()->update();
+        }
+    }
+}
+
+void PageView::endFetchedArrival()
+{
+    if (holder->hasArrivingPage() && !holder->arrivalEnded) {
+        finishArrival();
+    }
 }
 
 bool PageView::isArriving() const
 {
-    return arrivalTimer->isActive();
+    return holder->arrivalActive;
 }
 
 void PageView::stopArriving()
 {
-    if (arrivalTimer->isActive()) {
-        arrivedBytes = holder->arrivingText.size();
-        finishArrival();
+    if (holder->arrivalActive) {
+        // The sheets and images it still waits for go too: this is the end of all that comes for it.
+        imageTimer->stop();
+        holder->imageFetch.reset();
+        holder->sheetFetch.reset();
+        if (holder->arrivalEnded) {
+            endArrival();
+        } else {
+            finishArrival();
+            holder->sheetFetch.reset();
+            if (holder->arrivalActive) {
+                endArrival();
+            }
+        }
     }
 }
 
 void PageView::feedNextPiece()
 {
-    if (!holder->page) {
+    if (!holder->hasArrivingPage()) {
         arrivalTimer->stop();
         return;
     }
     takeArrivingSheets();
+    startWaitingSheets();
     if (holder->arrivalEnded) {
         if (!holder->sheetFetch) {
-            arrivalTimer->stop();
-            emit arrivalFinished();
+            endArrival();
         }
+        return;
+    }
+    if (holder->arrivalIsFed) {
         return;
     }
     const rust::String &text = holder->arrivingText;
@@ -202,18 +277,25 @@ void PageView::feedNextPiece()
     while (end < text.size() && (static_cast<unsigned char>(text.data()[end]) & 0xC0) == 0x80) {
         ++end;
     }
-    (*holder->page)->feed(rust::Str(text.data() + arrivedBytes, end - arrivedBytes));
+    holder->arrivingPage()->feed(rust::Str(text.data() + arrivedBytes, end - arrivedBytes));
     arrivedBytes = end;
-    if (!holder->sheetFetch && (*holder->page)->has_waiting_sheets()) {
-        const QByteArray address = incomingAddress.toUtf8();
-        holder->sheetFetch = (*holder->page)->start_sheet_fetch(rust::Str(address.constData(), static_cast<size_t>(address.size())));
+    startWaitingSheets();
+    if (!holder->incoming) {
+        updateScrollBars();
+        viewport()->update();
     }
-    updateScrollBars();
-    viewport()->update();
     if (arrivedBytes >= text.size()) {
         finishArrival();
     } else {
         emit arrivalProgress(static_cast<int>(arrivedBytes * 100 / text.size()));
+    }
+}
+
+void PageView::startWaitingSheets()
+{
+    if (!holder->sheetFetch && holder->arrivingPage()->has_waiting_sheets()) {
+        const QByteArray address = incomingAddress.toUtf8();
+        holder->sheetFetch = holder->arrivingPage()->start_sheet_fetch(rust::Str(address.constData(), static_cast<size_t>(address.size())));
     }
 }
 
@@ -223,35 +305,64 @@ void PageView::takeArrivingSheets()
         return;
     }
     const QByteArray address = incomingAddress.toUtf8();
-    if ((*holder->page)->take_sheets(**holder->sheetFetch, rust::Str(address.constData(), static_cast<size_t>(address.size())))) {
+    auto &page = holder->arrivingPage();
+    if (page->take_sheets(**holder->sheetFetch, rust::Str(address.constData(), static_cast<size_t>(address.size())))) {
         holder->sheetFetch.reset();
-        (*holder->page)->apply_sheets();
-        layOut();
+        page->apply_sheets();
+        if (holder->incoming) {
+            arrivalSize = viewport()->size();
+            page->lay_out(static_cast<float>(arrivalSize.width()), static_cast<float>(arrivalSize.height()));
+        } else {
+            layOut();
+        }
     }
 }
 
 void PageView::finishArrival()
 {
-    (*holder->page)->finish_arriving();
     holder->arrivingText = rust::String();
+    holder->arrivingPage()->finish_arriving();
     holder->arrivalEnded = true;
-    updateScrollBars();
-    viewport()->update();
+    startWaitingSheets();
+    if (!holder->incoming) {
+        updateScrollBars();
+        viewport()->update();
+    }
     giveBackFreeMemory();
     if (!holder->sheetFetch) {
-        arrivalTimer->stop();
-        emit arrivalFinished();
+        endArrival();
     }
+}
+
+void PageView::endArrival()
+{
+    arrivalTimer->stop();
+    holder->arrivalActive = false;
+    emit arrivalFinished();
+}
+
+void PageView::dropArrival()
+{
+    arrivalTimer->stop();
+    holder->arrivalActive = false;
+    holder->arrivingText = rust::String();
+    holder->sheetFetch.reset();
+}
+
+void PageView::forgetShownImages()
+{
+    imageTimer->stop();
+    holder->imageFetch.reset();
+    imagesWaiting = false;
+    holder->forgetImages();
 }
 
 void PageView::forgetPage()
 {
-    arrivalTimer->stop();
-    holder->arrivingText = rust::String();
-    holder->sheetFetch.reset();
-    imageTimer->stop();
-    holder->imageFetch.reset();
-    holder->forgetImages();
+    dropArrival();
+    holder->incoming.reset();
+    holder->incomingInPieces = false;
+    forgetShownImages();
 }
 
 bool PageView::setLocalPage(rust::String utf8, const QString &directory, const QString &address)
@@ -271,18 +382,6 @@ bool PageView::setLocalPage(rust::String utf8, const QString &directory, const Q
     return false;
 }
 
-void PageView::prepareFetchedPage(rust::String utf8, const QString &address)
-{
-    const QByteArray bytes = address.toUtf8();
-    const rust::Str str(bytes.constData(), static_cast<size_t>(bytes.size()));
-    const QSize size = viewport()->size();
-    holder->incoming = ron_browser::open_fetched_page(std::move(utf8), str, static_cast<float>(size.width()),
-                                                      static_cast<float>(size.height()));
-    holder->sheetFetch = (*holder->incoming)->start_sheet_fetch(str);
-    incomingAddress = address;
-    incomingWait.start();
-}
-
 bool PageView::hasIncomingPage() const
 {
     return holder->incoming.has_value();
@@ -290,38 +389,63 @@ bool PageView::hasIncomingPage() const
 
 bool PageView::incomingPageIsReady()
 {
-    if (!holder->incoming || !holder->sheetFetch) {
+    if (!holder->incoming) {
+        return true;
+    }
+    const bool waitedLongEnough = incomingWait.elapsed() > maxSheetWaitMs;
+    if (holder->incomingInPieces) {
+        const bool hasSomething = (*holder->incoming)->has_content() || holder->arrivalEnded;
+        return hasSomething && (!holder->sheetFetch || waitedLongEnough);
+    }
+    if (!holder->sheetFetch) {
         return true;
     }
     const QByteArray bytes = incomingAddress.toUtf8();
     const rust::Str str(bytes.constData(), static_cast<size_t>(bytes.size()));
-    return (*holder->incoming)->take_sheets(**holder->sheetFetch, str) || incomingWait.elapsed() > maxSheetWaitMs;
+    return (*holder->incoming)->take_sheets(**holder->sheetFetch, str) || waitedLongEnough;
 }
 
 void PageView::showIncomingPage()
 {
     if (holder->incoming) {
-        (*holder->incoming)->apply_sheets();
+        if (!holder->incomingInPieces) {
+            (*holder->incoming)->apply_sheets();
+        }
         showIncoming();
     }
 }
 
 void PageView::showIncoming()
 {
-    forgetPage();
-    holder->sheetFetch.reset();
+    forgetShownImages();
+    const bool inPieces = holder->incomingInPieces;
+    if (!inPieces) {
+        holder->sheetFetch.reset();
+    }
+    holder->incomingInPieces = false;
     holder->page = std::move(holder->incoming);
     holder->incoming.reset();
     verticalScrollBar()->setValue(0);
     horizontalScrollBar()->setValue(0);
     setHoveredLink(QString());
     pressedLink.clear();
-    layOut();
+    // What arrived is laid out already, unless the window has changed since.
+    if (inPieces && arrivalSize == viewport()->size()) {
+        laidOutWidth = arrivalSize.width();
+        updateScrollBars();
+        viewport()->update();
+    } else {
+        layOut();
+    }
     giveBackFreeMemory();
 }
 
 void PageView::dropIncomingPage()
 {
+    if (holder->incomingInPieces) {
+        dropArrival();
+    }
+    holder->incomingInPieces = false;
     holder->sheetFetch.reset();
     holder->incoming.reset();
 }
@@ -329,31 +453,47 @@ void PageView::dropIncomingPage()
 void PageView::fetchImages(const QString &pageAddress)
 {
     if (holder->page) {
-        const QByteArray address = pageAddress.toUtf8();
-        holder->imageFetch =
-            (*holder->page)->start_image_fetch(rust::Str(address.constData(), static_cast<size_t>(address.size())));
+        imageAddress = pageAddress;
+        sinceImageLayout.start();
+        takeImages();
         imageTimer->start();
     }
 }
 
 bool PageView::isLoadingImages() const
 {
-    return holder->imageFetch.has_value();
+    return imageTimer->isActive();
 }
 
 void PageView::takeImages()
 {
-    if (!holder->page || !holder->imageFetch) {
+    if (!holder->page) {
         imageTimer->stop();
         return;
     }
-    if ((*holder->page)->take_images(**holder->imageFetch)) {
-        // The numbers of images stay, so what is cached stays right.
+    const bool pageArrives = holder->arrivalActive && !holder->incoming;
+    if (holder->imageFetch) {
+        imagesWaiting |= (*holder->page)->take_images(**holder->imageFetch);
+        if ((*holder->imageFetch)->is_done()) {
+            holder->imageFetch.reset();
+        }
+    }
+    // The numbers of images stay, so what is cached stays right.
+    if (imagesWaiting && (!pageArrives || sinceImageLayout.elapsed() > minImageLayoutMs)) {
+        imagesWaiting = false;
+        sinceImageLayout.start();
         layOut();
     }
-    if ((*holder->imageFetch)->is_done()) {
+    if (holder->imageFetch) {
+        return;
+    }
+    // Only one set goes at a time, so that a page cannot have too many on the way at once.
+    const QByteArray address = imageAddress.toUtf8();
+    auto fetch = (*holder->page)->start_image_fetch(rust::Str(address.constData(), static_cast<size_t>(address.size())));
+    if (fetch->requested() > 0) {
+        holder->imageFetch = std::move(fetch);
+    } else if (!pageArrives && !imagesWaiting) {
         imageTimer->stop();
-        holder->imageFetch.reset();
     }
 }
 

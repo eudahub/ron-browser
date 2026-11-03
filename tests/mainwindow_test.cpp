@@ -14,12 +14,15 @@
 #include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTimer>
 
 #include <algorithm>
 
 namespace {
 
 const QByteArray head = "<!DOCTYPE html><style>body{margin:0}p{margin:0;height:100px}</style>";
+// How long the server holds back the rest of a page that it sends slowly.
+const int slowAnswerMs = 1500;
 
 QByteArray firstPage()
 {
@@ -53,8 +56,11 @@ private slots:
     void aPageOnTheNetworkCannotOpenLocalFiles();
     void stoppingLeavesThePageAsItWas();
     void aPageShowsWhileItArrives();
+    void aPageFromTheNetworkShowsBeforeAllOfItHasCome();
+    void stoppingAPageFromTheNetworkKeepsWhatCame();
     void scrollingStaysWhileAPageArrives();
     void stoppingAnArrivalKeepsWhatCame();
+    void backDropsAPageThatDoesNotShowYet();
     void aButtonOfTheMouseGoesBack();
 
 private:
@@ -86,7 +92,21 @@ void MainWindowTest::answerRequest(QTcpSocket *socket)
         socket->disconnectFromHost();
     };
     const QByteArray html = "Content-Type: text/html\r\n";
-    if (path == QStringLiteral("/net.html")) {
+    if (path == QStringLiteral("/slowly.html")) {
+        QByteArray start = "<title>Slowly</title>" + head;
+        for (int line = 0; line < 20; ++line) {
+            start += "<p>line</p>";
+        }
+        socket->write("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n" + start);
+        QTimer::singleShot(slowAnswerMs, socket, [socket] {
+            QByteArray rest;
+            for (int line = 0; line < 30; ++line) {
+                rest += "<p>line</p>";
+            }
+            socket->write(rest);
+            socket->disconnectFromHost();
+        });
+    } else if (path == QStringLiteral("/net.html")) {
         respond("200 OK", html,
                 "<title>On the net</title>" + head + "<a href=next.html>on</a><br><img src=picture.png>");
     } else if (path == QStringLiteral("/next.html")) {
@@ -371,6 +391,8 @@ void MainWindowTest::aPageShowsWhileItArrives()
     PageView *view = window->pageView();
     QVERIFY(window->isLoading());
     QVERIFY(action("Stop")->isEnabled());
+    // What was there stays until there is something to show of the new page.
+    QTRY_COMPARE_WITH_TIMEOUT(window->windowTitle(), QStringLiteral("Third"), 5000);
     // The range of the scroll bar only grows, and the window goes on in the meantime.
     int range = 0;
     int grew = 0;
@@ -391,11 +413,41 @@ void MainWindowTest::aPageShowsWhileItArrives()
     QVERIFY(window->statusBar()->currentMessage().contains(QStringLiteral("Encoding")));
 }
 
+void MainWindowTest::aPageFromTheNetworkShowsBeforeAllOfItHasCome()
+{
+    window->openPage(serverAddress("/slowly.html"));
+    PageView *view = window->pageView();
+    QTRY_COMPARE_WITH_TIMEOUT(window->windowTitle(), QStringLiteral("Slowly"), slowAnswerMs - 500);
+    QVERIFY(window->isLoading());
+    QVERIFY(action("Stop")->isEnabled());
+    QTRY_VERIFY_WITH_TIMEOUT(view->verticalScrollBar()->maximum() > 0, slowAnswerMs - 500);
+    const int early = view->verticalScrollBar()->maximum();
+    QVERIFY(early < 5000 - view->viewport()->height());
+    QTRY_VERIFY_WITH_TIMEOUT(!window->isLoading(), 10000);
+    QVERIFY(view->verticalScrollBar()->maximum() > early);
+    QVERIFY(!action("Stop")->isEnabled());
+    QVERIFY(window->statusBar()->currentMessage().contains(QStringLiteral("from the server")));
+    QVERIFY(action("Back")->isEnabled());
+}
+
+void MainWindowTest::stoppingAPageFromTheNetworkKeepsWhatCame()
+{
+    window->openPage(serverAddress("/slowly.html"));
+    QTRY_COMPARE_WITH_TIMEOUT(window->windowTitle(), QStringLiteral("Slowly"), slowAnswerMs - 500);
+    action("Stop")->trigger();
+    QVERIFY(!window->isLoading());
+    QVERIFY(!action("Stop")->isEnabled());
+    QCOMPARE(window->windowTitle(), QStringLiteral("Slowly"));
+    QVERIFY(window->statusBar()->currentMessage().contains(QStringLiteral("Encoding")));
+    QVERIFY(window->pageView()->verticalScrollBar()->maximum() > 0);
+}
+
 void MainWindowTest::scrollingStaysWhileAPageArrives()
 {
     window->setArrivalSeconds(2);
     window->openPage(directory.filePath("third.html"));
     PageView *view = window->pageView();
+    QTRY_COMPARE_WITH_TIMEOUT(window->windowTitle(), QStringLiteral("Third"), 5000);
     QTRY_VERIFY_WITH_TIMEOUT(view->verticalScrollBar()->maximum() >= 100, 5000);
     view->setScrollY(100);
     QTRY_VERIFY_WITH_TIMEOUT(!window->isLoading(), 10000);
@@ -404,17 +456,37 @@ void MainWindowTest::scrollingStaysWhileAPageArrives()
 
 void MainWindowTest::stoppingAnArrivalKeepsWhatCame()
 {
+    QByteArray lines;
+    for (int line = 0; line < 2000; ++line) {
+        lines += "<p>line</p>";
+    }
+    write("long.html", "<title>Long</title>" + head + lines);
+    write("longer.html", "<title>Longer</title>" + head + lines + lines);
     window->setArrivalSeconds(30);
-    window->openPage(directory.filePath("third.html"));
-    QTest::qWait(300);
+    window->openPage(directory.filePath("long.html"));
+    QTRY_COMPARE_WITH_TIMEOUT(window->windowTitle(), QStringLiteral("Long"), 5000);
     action("Stop")->trigger();
     QVERIFY(!window->isLoading());
     QVERIFY(!action("Stop")->isEnabled());
+    QCOMPARE(window->windowTitle(), QStringLiteral("Long"));
     // Back also leaves a page that is still arriving, for where the user was.
-    window->openPage(directory.filePath("second.html"));
+    window->openPage(directory.filePath("longer.html"));
+    QTRY_COMPARE_WITH_TIMEOUT(window->windowTitle(), QStringLiteral("Longer"), 5000);
     QVERIFY(window->isLoading());
     action("Back")->trigger();
     QVERIFY(action("Forward")->isEnabled());
+}
+
+void MainWindowTest::backDropsAPageThatDoesNotShowYet()
+{
+    click();
+    window->setArrivalSeconds(30);
+    window->openPage(directory.filePath("third.html"));
+    QVERIFY(window->isLoading());
+    action("Back")->trigger();
+    QVERIFY(!window->isLoading());
+    QCOMPARE(window->windowTitle(), QStringLiteral("Second"));
+    QVERIFY(!action("Forward")->isEnabled());
 }
 
 void MainWindowTest::aButtonOfTheMouseGoesBack()

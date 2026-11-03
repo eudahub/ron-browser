@@ -31,6 +31,10 @@ const MAX_REDIRECTS: usize = 10;
 const TIMEOUT: Duration = Duration::from_secs(60);
 const USER_AGENT: &str = concat!("ron-browser/", env!("CARGO_PKG_VERSION"));
 const MAX_SHEET_BYTES: u64 = 16 * 1024 * 1024;
+const PAGE_ACCEPT: &str = "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1";
+/// A page comes in pieces of at most this size, of which only so many wait for being taken.
+const PIECE_BYTES: usize = 64 * 1024;
+const PIECES_WAITING: usize = 16;
 /// How many images or style sheets are read at once.
 const WORKER_THREADS: usize = 4;
 /// How many images of a page are read.
@@ -219,11 +223,48 @@ fn fetch_limited(
     accept: &str,
     max_bytes: u64,
 ) -> Result<Fetched, FetchError> {
+    let mut opened = open_address(address, asker, accept, max_bytes)?;
+    // The limit of the library counts packed bytes, while a few kilobytes can unpack to anything.
+    // This counts what really comes out.
+    let mut bytes = Vec::new();
+    opened
+        .response
+        .body_mut()
+        .as_reader()
+        .take(max_bytes + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| FetchError::Failed(error.to_string()))?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(FetchError::TooLarge);
+    }
+    Ok(Fetched {
+        address: opened.address,
+        bytes,
+        mime: opened.mime,
+        charset: opened.charset,
+    })
+}
+
+/// An address that has answered, with its content still to be read.
+struct Opened {
+    address: String,
+    mime: String,
+    charset: String,
+    response: ureq::http::Response<ureq::Body>,
+}
+
+/// Asks for an address, following redirects, as far as the start of its content.
+fn open_address(
+    address: &str,
+    asker: Asker<'_>,
+    accept: &str,
+    max_bytes: u64,
+) -> Result<Opened, FetchError> {
     let mut url = Url::parse(address).map_err(|error| FetchError::Failed(error.to_string()))?;
     url.set_fragment(None);
     for _ in 0..=MAX_REDIRECTS {
         let public_only = check_rules(asker, &url)?;
-        let mut response = agent(public_only)
+        let response = agent(public_only)
             .get(url.as_str())
             .header("Accept", accept)
             .call()
@@ -262,23 +303,11 @@ fn fetch_limited(
         }
         let mime = body.mime_type().unwrap_or_default().to_ascii_lowercase();
         let charset = body.charset().unwrap_or_default().to_owned();
-        // The limit of the library counts packed bytes, while a few kilobytes can unpack to anything.
-        // This counts what really comes out.
-        let mut bytes = Vec::new();
-        response
-            .body_mut()
-            .as_reader()
-            .take(max_bytes + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|error| FetchError::Failed(error.to_string()))?;
-        if bytes.len() as u64 > max_bytes {
-            return Err(FetchError::TooLarge);
-        }
-        return Ok(Fetched {
+        return Ok(Opened {
             address: url.into(),
-            bytes,
             mime,
             charset,
+            response,
         });
     }
     Err(FetchError::Failed("too many redirects".to_owned()))
@@ -289,41 +318,101 @@ fn fetch_limited(
 /// # Errors
 /// Tells what went wrong or what the rules refuse.
 pub fn fetch_page(address: &str, asker: Asker<'_>) -> Result<Fetched, FetchError> {
-    fetch_limited(
-        address,
-        asker,
-        "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1",
-        MAX_PAGE_BYTES,
-    )
+    fetch_limited(address, asker, PAGE_ACCEPT, MAX_PAGE_BYTES)
 }
 
 /// A page being read on a thread of its own. Dropping this lets go of the result.
 pub struct PageFetch {
-    receiver: Receiver<Result<Fetched, FetchError>>,
+    receiver: Receiver<PageEvent>,
+    ended: bool,
+}
+
+/// What has happened with a page being read.
+#[derive(Debug, PartialEq)]
+pub enum PageEvent {
+    /// The server has answered, and this is what it says of the page.
+    Started {
+        address: String,
+        mime: String,
+        charset: String,
+    },
+    /// The next piece of the page.
+    Data(Vec<u8>),
+    /// All of it has come.
+    End,
+    /// It ends here, whether or not anything has come.
+    Failed(FetchError),
 }
 
 impl PageFetch {
-    /// Starts reading a page.
+    /// Starts reading a page. Pieces wait for being taken, so a fast server cannot fill the memory
+    /// with more than a few of them.
     #[must_use]
     pub fn start(address: &str, asking_page: Option<&str>) -> Self {
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::sync_channel(PIECES_WAITING);
         let address = address.to_owned();
         let asking_page = asking_page.map(str::to_owned);
         thread::spawn(move || {
             let asker = asking_page.as_deref().map_or(Asker::User, Asker::Page);
-            let _ = sender.send(fetch_page(&address, asker));
+            let event = read_in_pieces(&address, asker, &sender)
+                .map_or_else(PageEvent::Failed, |()| PageEvent::End);
+            let _ = sender.send(event);
         });
-        Self { receiver }
+        Self {
+            receiver,
+            ended: false,
+        }
     }
 
-    /// The result, once it is there.
-    pub fn poll(&mut self) -> Option<Result<Fetched, FetchError>> {
-        match self.receiver.try_recv() {
-            Ok(result) => Some(result),
-            Err(TryRecvError::Empty) => None,
+    /// The next thing that has happened, if any.
+    pub fn poll(&mut self) -> Option<PageEvent> {
+        if self.ended {
+            return None;
+        }
+        let event = match self.receiver.try_recv() {
+            Ok(event) => event,
+            Err(TryRecvError::Empty) => return None,
             Err(TryRecvError::Disconnected) => {
-                Some(Err(FetchError::Failed("the fetch stopped".to_owned())))
+                PageEvent::Failed(FetchError::Failed("the fetch stopped".to_owned()))
             }
+        };
+        self.ended = matches!(event, PageEvent::End | PageEvent::Failed(_));
+        Some(event)
+    }
+}
+
+/// Sends a page along as it comes. Stops by itself once nobody wants it.
+fn read_in_pieces(
+    address: &str,
+    asker: Asker<'_>,
+    sender: &mpsc::SyncSender<PageEvent>,
+) -> Result<(), FetchError> {
+    let mut opened = open_address(address, asker, PAGE_ACCEPT, MAX_PAGE_BYTES)?;
+    let started = PageEvent::Started {
+        address: opened.address,
+        mime: opened.mime,
+        charset: opened.charset,
+    };
+    if sender.send(started).is_err() {
+        return Ok(());
+    }
+    let mut reader = opened.response.body_mut().as_reader();
+    let mut total = 0_u64;
+    loop {
+        let mut piece = vec![0; PIECE_BYTES];
+        let count = reader
+            .read(&mut piece)
+            .map_err(|error| FetchError::Failed(error.to_string()))?;
+        if count == 0 {
+            return Ok(());
+        }
+        total += count as u64;
+        if total > MAX_PAGE_BYTES {
+            return Err(FetchError::TooLarge);
+        }
+        piece.truncate(count);
+        if sender.send(PageEvent::Data(piece)).is_err() {
+            return Ok(());
         }
     }
 }

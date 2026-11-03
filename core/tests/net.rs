@@ -11,7 +11,7 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use ron_browser_core::links::{Target, resolve};
 use ron_browser_core::net::{
-    Asker, FetchError, ImageFetch, ImageRequest, MAX_PAGE_BYTES, PageFetch, fetch_page,
+    Asker, FetchError, ImageFetch, ImageRequest, MAX_PAGE_BYTES, PageEvent, PageFetch, fetch_page,
     image_requests, is_private_ip, may_redirect,
 };
 use url::Url;
@@ -258,15 +258,93 @@ fn private_addresses_are_known() {
 fn a_page_is_read_apart_from_the_window() {
     let server = serve(site);
     let mut fetch = PageFetch::start(&format!("{}/page", server.address), None);
+    let events = all_events(&mut fetch);
+    assert!(matches!(
+        &events[0],
+        PageEvent::Started { mime, .. } if mime == "text/html"
+    ));
+    assert_eq!(events[1], PageEvent::Data(b"<p>hello".to_vec()));
+    assert_eq!(events[2], PageEvent::End);
+    assert_eq!(fetch.poll(), None);
+}
+
+fn all_events(fetch: &mut PageFetch) -> Vec<PageEvent> {
     let start = Instant::now();
-    let result = loop {
-        if let Some(result) = fetch.poll() {
-            break result;
+    let mut events = Vec::new();
+    loop {
+        match fetch.poll() {
+            Some(event) => {
+                let last = matches!(event, PageEvent::End | PageEvent::Failed(_));
+                events.push(event);
+                if last {
+                    return events;
+                }
+            }
+            None => thread::sleep(Duration::from_millis(5)),
+        }
+        assert!(start.elapsed() < Duration::from_secs(20));
+    }
+}
+
+#[test]
+fn a_page_comes_as_the_server_sends_it() {
+    // Sends a part, and the rest only once the first part has been seen.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = format!("http://{}/", listener.local_addr().unwrap());
+    let (seen_sender, seen) = std::sync::mpsc::channel::<()>();
+    thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buffer = [0; 4096];
+        let _ = stream.read(&mut buffer);
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nfirst")
+            .unwrap();
+        stream.flush().unwrap();
+        seen.recv_timeout(Duration::from_secs(10)).unwrap();
+        stream.write_all(b"second").unwrap();
+    });
+    let mut fetch = PageFetch::start(&address, None);
+    let start = Instant::now();
+    let mut came = Vec::new();
+    while came.len() < 5 {
+        match fetch.poll() {
+            Some(PageEvent::Data(piece)) => came.extend(piece),
+            Some(event) => assert!(matches!(event, PageEvent::Started { .. }), "{event:?}"),
+            None => thread::sleep(Duration::from_millis(5)),
         }
         assert!(start.elapsed() < Duration::from_secs(10));
-        thread::sleep(Duration::from_millis(5));
-    };
-    assert_eq!(result.unwrap().bytes, b"<p>hello");
+    }
+    assert_eq!(came, b"first");
+    seen_sender.send(()).unwrap();
+    for event in all_events(&mut fetch) {
+        if let PageEvent::Data(piece) = event {
+            came.extend(piece);
+        }
+    }
+    assert_eq!(came, b"firstsecond");
+}
+
+#[test]
+fn what_goes_wrong_while_reading_is_told() {
+    let server = serve(site);
+    for (path, wanted) in [
+        ("/nothing", FetchError::Status(404)),
+        ("/huge", FetchError::TooLarge),
+    ] {
+        let mut fetch = PageFetch::start(&format!("{}{path}", server.address), None);
+        assert_eq!(
+            all_events(&mut fetch),
+            [PageEvent::Failed(wanted)],
+            "{path}"
+        );
+    }
+    // Too large after unpacking comes out only while reading.
+    let mut fetch = PageFetch::start(&format!("{}/unpacks-huge", server.address), None);
+    let events = all_events(&mut fetch);
+    assert_eq!(
+        events.last(),
+        Some(&PageEvent::Failed(FetchError::TooLarge))
+    );
 }
 
 #[test]

@@ -21,6 +21,12 @@ namespace {
 
 // Addresses come from pages, and can be very long or hold what a status bar should not show.
 const int maxShownAddress = 300;
+// A local page larger than this comes in pieces, so that it shows at once.
+const size_t arrivingPageBytes = 1024 * 1024;
+// How long the window stays with what the network gives, before it goes on with other things.
+const qint64 fetchEventsMs = 15;
+// Looking for a place goes over all of a page, so it is not done at every step.
+const qint64 placeTryMs = 300;
 
 QString shownAddress(const QString &address)
 {
@@ -90,6 +96,9 @@ MainWindow::MainWindow(std::string forcedEncoding)
     connect(view, &PageView::backButtonPressed, this, &MainWindow::goBack);
     connect(view, &PageView::forwardButtonPressed, this, &MainWindow::goForward);
     connect(view, &PageView::arrivalProgress, this, [this](int percent) {
+        if (view->hasIncomingPage()) {
+            return;
+        }
         pageStatus = tr("Loading %1%").arg(percent);
         statusBar()->showMessage(pageStatus);
         const QString title = view->pageTitle();
@@ -98,6 +107,10 @@ MainWindow::MainWindow(std::string forcedEncoding)
         }
     });
     connect(view, &PageView::arrivalFinished, this, [this] {
+        // Unseen so far, it says all this when it shows.
+        if (view->hasIncomingPage()) {
+            return;
+        }
         pageStatus = fetchedStatus;
         statusBar()->showMessage(pageStatus);
         const QString title = view->pageTitle();
@@ -149,14 +162,15 @@ MainWindow::LocalLoad MainWindow::loadLocalFile(const QString &address, const QS
         return LocalLoad::Failed;
     }
     const QString status = tr("Encoding: %1 (%2)").arg(QString::fromStdString(decoded.encoding), decoded.encodingSource);
-    if (arrivalSeconds > 0) {
+    if (arrivalSeconds > 0 || decoded.utf8.size() > arrivingPageBytes) {
         view->startArriving(std::move(decoded.utf8), QFileInfo(path).absolutePath(), address, arrivalSeconds);
-        loadedAddress = address;
-        setWindowTitle(QUrl(address).fileName());
+        fetchedAddress = address;
         fetchedStatus = status;
-        pageStatus = tr("Loading 0%");
+        fetchTimer->start();
+        pageStatus = tr("Loading %1").arg(shownAddress(address));
         statusBar()->showMessage(pageStatus);
-        return LocalLoad::Shown;
+        updateNavigation();
+        return LocalLoad::Waiting;
     }
     if (!view->setLocalPage(std::move(decoded.utf8), QFileInfo(path).absolutePath(), address)) {
         fetchedAddress = address;
@@ -178,12 +192,16 @@ MainWindow::LocalLoad MainWindow::loadLocalFile(const QString &address, const QS
 void MainWindow::goTo(const QString &address, const QString &fragment, const QString &askingPage)
 {
     history->save_scroll(view->scrollY());
-    stopFetch();
+    // A place on the page that is arriving leaves the rest of it coming.
+    const bool onArrivingPage = address == loadedAddress && !isWaitingForPage() && view->isArriving();
+    if (!onArrivingPage) {
+        stopFetch();
+    }
     const QByteArray bytes = address.toUtf8();
     const QString path = asQString(ron_browser::local_path(asStr(bytes)));
+    fetchFragment = fragment;
+    fetchScroll.reset();
     if (address != loadedAddress) {
-        fetchFragment = fragment;
-        fetchScroll.reset();
         if (path.isEmpty()) {
             startFetch(address, askingPage);
             return;
@@ -194,7 +212,8 @@ void MainWindow::goTo(const QString &address, const QString &fragment, const QSt
     }
     const QByteArray fragmentBytes = fragment.toUtf8();
     history->visit(asStr(bytes), asStr(fragmentBytes));
-    view->scrollToFragment(fragment);
+    placeWaiting = !view->scrollToFragment(fragment) && onArrivingPage;
+    placeScroll = view->scrollY();
     updateNavigation();
 }
 
@@ -211,16 +230,24 @@ void MainWindow::startFetch(const QString &address, const QString &askingPage)
 
 void MainWindow::stopFetch()
 {
-    if (view->isArriving()) {
-        view->stopArriving();
-        updateNavigation();
-    }
+    placeWaiting = false;
     if (isWaitingForPage()) {
         fetchTimer->stop();
         pageFetch.reset();
+        pageDecoder.reset();
         view->dropIncomingPage();
         pageStatus.clear();
         statusBar()->clearMessage();
+        updateNavigation();
+    } else if (view->isArriving()) {
+        // Decides what the status says of it, as it ends here.
+        if (pageDecoder) {
+            noteFetchedEncoding();
+        }
+        fetchTimer->stop();
+        pageFetch.reset();
+        pageDecoder.reset();
+        view->stopArriving();
         updateNavigation();
     }
 }
@@ -230,16 +257,9 @@ bool MainWindow::isFetching() const
     return isWaitingForPage() || view->isArriving();
 }
 
-void MainWindow::stopArrivalOnly()
-{
-    if (view->isArriving()) {
-        view->stopArriving();
-    }
-}
-
 bool MainWindow::isWaitingForPage() const
 {
-    return pageFetch.has_value() || view->hasIncomingPage();
+    return view->hasIncomingPage() || (pageFetch.has_value() && !view->isArriving());
 }
 
 void MainWindow::setArrivalSeconds(int seconds)
@@ -249,43 +269,111 @@ void MainWindow::setArrivalSeconds(int seconds)
 
 void MainWindow::checkFetch()
 {
-    if (view->hasIncomingPage()) {
-        if (view->incomingPageIsReady()) {
-            fetchTimer->stop();
-            showFetchedPage();
+    takeFetchEvents();
+    const bool hadIncoming = view->hasIncomingPage();
+    if (hadIncoming && view->incomingPageIsReady()) {
+        showFetchedPage();
+    } else if (!hadIncoming && view->isArriving()) {
+        const QString title = view->pageTitle();
+        if (!title.isEmpty() && title != windowTitle()) {
+            setWindowTitle(title);
         }
-        return;
+        if (pageFetch) {
+            pageStatus = tr("Loading: %1 KB").arg(fetchedBytes / 1024);
+            statusBar()->showMessage(pageStatus);
+        }
     }
-    if (!pageFetch) {
+    if (placeWaiting) {
+        goOnToPlace();
+    }
+    if (!isFetching()) {
         fetchTimer->stop();
-        return;
     }
-    ron_browser::FetchedPage fetched = (*pageFetch)->poll();
-    if (!fetched.done) {
-        return;
+}
+
+void MainWindow::takeFetchEvents()
+{
+    QElapsedTimer spent;
+    spent.start();
+    while (pageFetch && spent.elapsed() < fetchEventsMs) {
+        ron_browser::FetchEvent event = (*pageFetch)->poll();
+        if (event.kind == ron_browser::FetchEventKind::Nothing) {
+            return;
+        }
+        if (!takeFetchEvent(std::move(event))) {
+            pageFetch.reset();
+            pageDecoder.reset();
+        }
+    }
+}
+
+bool MainWindow::takeFetchEvent(ron_browser::FetchEvent event)
+{
+    switch (event.kind) {
+    case ron_browser::FetchEventKind::Started: {
+        const QString mime = asQString(event.mime);
+        const QString address = asQString(event.address);
+        if (!mime.isEmpty() && mime != QStringLiteral("text/html") && mime != QStringLiteral("application/xhtml+xml")) {
+            pageStatus.clear();
+            statusBar()->showMessage(tr("Not a web page, but %1: %2").arg(mime.left(100), shownAddress(address)));
+            pageFetch.reset();
+            updateNavigation();
+            return false;
+        }
+        pageDecoder = ron_browser::new_stream_decoder(event.charset);
+        fetchedBytes = 0;
+        fetchedAddress = address;
+        fetchedStatus.clear();
+        view->beginFetchedArrival(address);
+        return true;
+    }
+    case ron_browser::FetchEventKind::Data: {
+        fetchedBytes += static_cast<qint64>(event.bytes.size());
+        const rust::String text = (*pageDecoder)->push({event.bytes.data(), event.bytes.size()});
+        view->feedFetched(text);
+        return true;
+    }
+    case ron_browser::FetchEventKind::End:
+        endFetchedPage(QString());
+        return false;
+    case ron_browser::FetchEventKind::Failed: {
+        const QString error = shownAddress(asQString(event.error));
+        if (view->hasIncomingPage() || !view->isArriving()) {
+            // Nothing of it shows yet, so what was there stays.
+            pageFetch.reset();
+            pageDecoder.reset();
+            view->dropIncomingPage();
+            pageStatus.clear();
+            statusBar()->showMessage(tr("Cannot open it: %1").arg(error));
+            updateNavigation();
+        } else {
+            endFetchedPage(error);
+        }
+        return false;
+    }
+    default:
+        return true;
+    }
+}
+
+void MainWindow::endFetchedPage(const QString &problem)
+{
+    const rust::String text = (*pageDecoder)->finish();
+    view->feedFetched(text);
+    noteFetchedEncoding();
+    if (!problem.isEmpty()) {
+        fetchedStatus = tr("Only part of it came: %1").arg(problem);
     }
     pageFetch.reset();
-    if (!fetched.error.empty()) {
-        fetchTimer->stop();
-        pageStatus.clear();
-        statusBar()->showMessage(tr("Cannot open it: %1").arg(shownAddress(asQString(fetched.error))));
-        updateNavigation();
-        return;
-    }
-    const QString mime = asQString(fetched.mime);
-    const QString address = asQString(fetched.address);
-    if (!mime.isEmpty() && mime != QStringLiteral("text/html") && mime != QStringLiteral("application/xhtml+xml")) {
-        fetchTimer->stop();
-        pageStatus.clear();
-        statusBar()->showMessage(tr("Not a web page, but %1: %2").arg(mime.left(100), shownAddress(address)));
-        updateNavigation();
-        return;
-    }
-    DecodedPage decoded = decodeFetchedPage(std::move(fetched.bytes), std::string(fetched.charset));
-    view->prepareFetchedPage(std::move(decoded.utf8), address);
-    fetchedAddress = address;
-    const QString security = QUrl(address).scheme() == QStringLiteral("https") ? QString() : tr("Not secure. ");
-    fetchedStatus = security + tr("Encoding: %1 (%2)").arg(QString::fromStdString(decoded.encoding), decoded.encodingSource);
+    view->endFetchedArrival();
+}
+
+void MainWindow::noteFetchedEncoding()
+{
+    const ron_browser::ChosenEncoding chosen = (*pageDecoder)->encoding();
+    const QString note = (*pageDecoder)->replaced() ? replacedBytesNote() : QString();
+    const QString security = QUrl(fetchedAddress).scheme() == QStringLiteral("https") ? QString() : tr("Not secure. ");
+    fetchedStatus = security + tr("Encoding: %1 (%2%3)").arg(asQString(chosen.encoding), encodingSourceName(chosen), note);
 }
 
 void MainWindow::showFetchedPage()
@@ -296,17 +384,20 @@ void MainWindow::showFetchedPage()
     const QString title = view->pageTitle();
     const QUrl url(address);
     setWindowTitle(!title.isEmpty() ? title : url.isLocalFile() ? url.fileName() : url.host());
-    pageStatus = fetchedStatus;
+    pageStatus = view->isArriving() ? tr("Loading %1").arg(shownAddress(address)) : fetchedStatus;
     statusBar()->showMessage(pageStatus);
     if (fetchScroll) {
         view->setScrollY(*fetchScroll);
+        placeWaiting = view->isArriving() && view->scrollY() != *fetchScroll;
     } else {
         // Where a redirect ended up is the one place added, so that Back goes to before it.
         const QByteArray addressBytes = address.toUtf8();
         const QByteArray fragmentBytes = fetchFragment.toUtf8();
         history->visit(asStr(addressBytes), asStr(fragmentBytes));
-        view->scrollToFragment(fetchFragment);
+        placeWaiting = !view->scrollToFragment(fetchFragment) && view->isArriving();
     }
+    placeScroll = view->scrollY();
+    sincePlaceTried.start();
     // A local page has read its local images, and does not reach for others.
     if (!url.isLocalFile()) {
         view->fetchImages(address);
@@ -314,14 +405,31 @@ void MainWindow::showFetchedPage()
     updateNavigation();
 }
 
+void MainWindow::goOnToPlace()
+{
+    if (view->scrollY() != placeScroll) {
+        placeWaiting = false;
+        return;
+    }
+    const bool arriving = view->isArriving();
+    if (fetchScroll) {
+        view->setScrollY(*fetchScroll);
+        placeWaiting = arriving && view->scrollY() != *fetchScroll;
+    } else if (!arriving || sincePlaceTried.elapsed() >= placeTryMs) {
+        sincePlaceTried.start();
+        placeWaiting = !view->scrollToFragment(fetchFragment) && arriving;
+    }
+    placeScroll = view->scrollY();
+}
+
 void MainWindow::goBack()
 {
-    stopArrivalOnly();
     if (isWaitingForPage()) {
         // What was being read never counted as a place, so Back only drops it.
         stopFetch();
         return;
     }
+    stopFetch();
     history->save_scroll(view->scrollY());
     if (history->go_back()) {
         showCurrentEntry();
