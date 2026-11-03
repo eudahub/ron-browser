@@ -123,6 +123,7 @@ cmake --build build -j4
 build/ron-browser page.html
 build/ron-browser --print page.html            # the same as text, without a window
 build/ron-browser --screenshot out.png page.html
+build/ron-browser --screenshot out.png --size 1400x1600 https://...  # in a window of that size
 build/ron-browser --encoding mazovia page.htm  # any encoding name cpg-rs knows
 build/ron-browser --slow-load 30 page.html     # a file arrives as if over a slow network, over 30 s
 build/ron-browser --save-page DIR https://...  # the page with its scripts and style sheets, unchanged

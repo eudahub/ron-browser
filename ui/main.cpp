@@ -35,7 +35,7 @@ const int maxScreenshotWaitMs = 60000;
 const char usage[] =
     "usage: ron-browser [--encoding NAME] [--slow-load SECONDS] [FILE or ADDRESS]\n"
     "       ron-browser [--encoding NAME] --print FILE\n"
-    "       ron-browser [--encoding NAME] --screenshot PNG [--select X1 Y1 X2 Y2] [FILE or ADDRESS]\n"
+    "       ron-browser [--encoding NAME] --screenshot PNG [--size WIDTHxHEIGHT] [--select X1 Y1 X2 Y2] [FILE or ADDRESS]\n"
     "       ron-browser [--encoding NAME] --page-shot PNG [--size WIDTHxHEIGHT] FILE\n"
     "       ron-browser [--encoding NAME] --decode FILE\n"
     "       ron-browser --save-page DIRECTORY ADDRESS\n";
@@ -182,6 +182,7 @@ int main(int argc, char *argv[])
     }
     MainWindow window(encoding);
     window.setArrivalSeconds(slowLoadSeconds);
+    window.resize(pageShotSize);
     window.show();
     if (!path.isEmpty()) {
         window.openPage(path);
