@@ -121,6 +121,16 @@ Functions that run many times and only work on numbers and typed arrays get tran
 of the engine to WebAssembly, with checks of the types, going back to the interpreter when these fail.
 This gains the most and is the hardest, so it comes last, and only if stage 3 turns out not to be enough.
 
+## What is assumed
+
+A proper site with heavy reckoning, such as a forum with Argon2, offers it as WebAssembly, while JavaScript
+does the slow work: reacting to clicks and calling things. So the engine has to be correct rather than
+fast, and stage 5 is not planned unless measuring shows otherwise.
+
+This holds for reckoning. Pages built on large frameworks are another matter: they run a lot of JavaScript
+just to start, which is not numbers but objects and strings, and stage 5 would not help with that. How long
+that takes is the first thing to measure in stage 2.
+
 ## Open questions
 
 - Which engine, after measuring (stage 2).

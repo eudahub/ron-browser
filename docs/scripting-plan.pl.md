@@ -122,6 +122,16 @@ Funkcje, które wykonują się wiele razy i działają tylko na liczbach i tabli
 kodu bajtowego silnika na WebAssembly, ze sprawdzaniem typów i powrotem do interpretera, gdy się nie zgadzają.
 Daje to najwięcej i jest najtrudniejsze, więc idzie na końcu i tylko jeśli etap 3 okaże się niewystarczający.
 
+## Założenie
+
+Porządna strona z ciężkimi rachunkami, jak forum z Argon2, wystawia je jako WebAssembly, a JavaScript wykonuje
+powolną pracę: reaguje na kliknięcia i wywołuje inne rzeczy. Silnik ma więc być poprawny, a nie szybki, a etap 5
+nie jest planowany, chyba że pomiary pokażą inaczej.
+
+Dotyczy to rachunków. Inaczej jest ze stronami na dużych frameworkach: wykonują dużo JavaScriptu już przy starcie,
+i to nie na liczbach, lecz na obiektach i napisach, a w tym etap 5 by nie pomógł. Ile to trwa, trzeba zmierzyć jako
+pierwsze na etapie 2.
+
 ## Otwarte pytania
 
 - Który silnik, po pomiarach (etap 2).
