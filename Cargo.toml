@@ -1,0 +1,23 @@
+[package]
+name = "ron-browser-core"
+version = "0.1.0"
+edition = "2024"
+publish = false
+# The CMake build directory, with Cargo's output, sits next to the sources.
+include = ["src/**", "build.rs"]
+
+[lib]
+name = "ron_browser_core"
+path = "src/lib.rs"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+cxx = "1.0"
+ron = { path = "../ron" }
+
+[build-dependencies]
+cxx-build = "1.0"
+
+# Only the bridge to C++ may hold unsafe code; it allows that for itself.
+[lints.rust]
+unsafe_code = "deny"

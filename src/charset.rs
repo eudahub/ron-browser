@@ -1,0 +1,47 @@
+//! Finds the charset a page declares, before it can be decoded.
+
+/// How far into a page a declaration counts, as in the HTML standard.
+const DECLARATION_BYTES: usize = 1024;
+
+/// Finds `charset=...` in the first bytes of a page, as in
+/// `<meta charset="utf-8">` or `<meta http-equiv=content-type content="...; charset=utf-8">`.
+/// The declaration must be in a `<meta>` tag.
+#[must_use]
+pub fn declared(bytes: &[u8]) -> Option<String> {
+    let start = &bytes[..bytes.len().min(DECLARATION_BYTES)];
+    let lower = start.to_ascii_lowercase();
+    let mut position = 0;
+    while let Some(found) = find(&lower[position..], b"<meta") {
+        let tag_start = position + found;
+        let tag_end = find(&lower[tag_start..], b">").map_or(lower.len(), |end| tag_start + end);
+        let tag = &lower[tag_start..tag_end];
+        if let Some(name) = charset_in_tag(tag) {
+            return Some(name);
+        }
+        position = tag_end;
+    }
+    None
+}
+
+fn charset_in_tag(tag: &[u8]) -> Option<String> {
+    let after = &tag[find(tag, b"charset")? + b"charset".len()..];
+    let after = after
+        .trim_ascii_start()
+        .strip_prefix(b"=")?
+        .trim_ascii_start();
+    let is_end =
+        |byte: &u8| matches!(byte, b'"' | b'\'' | b';' | b'/') || byte.is_ascii_whitespace();
+    let name = match after.first() {
+        Some(b'"' | b'\'') => &after[1..],
+        _ => after,
+    };
+    let end = name.iter().position(is_end).unwrap_or(name.len());
+    let name = &name[..end];
+    (!name.is_empty() && name.is_ascii()).then(|| String::from_utf8_lossy(name).into_owned())
+}
+
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
