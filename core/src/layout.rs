@@ -663,17 +663,25 @@ impl Layouter<'_> {
         self.runs.push(run);
     }
 
-    /// Before the first text of a block, separates it from the text before.
+    /// Before the first text of a block, separates it from the text before, as far as
+    /// line ends from `<br>` have not already done so.
     fn begin_text(&mut self) {
         if !self.runs.is_empty() || self.out.text.is_empty() {
             return;
         }
-        self.out.text.push('\n');
         let gap = self
             .last_line_bottom
             .map_or(0.0, |bottom| self.cursor + self.margin.value() - bottom);
         // Blocks with room between them read as paragraphs when copied.
-        if gap >= 4.0 {
+        let wanted = if gap >= 4.0 { 2 } else { 1 };
+        let present = self
+            .out
+            .text
+            .bytes()
+            .rev()
+            .take_while(|&byte| byte == b'\n')
+            .count();
+        for _ in present..wanted {
             self.out.text.push('\n');
         }
     }

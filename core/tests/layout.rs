@@ -295,6 +295,19 @@ fn paragraphs_are_separated_more_than_plain_blocks_in_the_text() {
 }
 
 #[test]
+fn line_breaks_count_towards_what_separates_blocks() {
+    // As Chrome copies it: the end of the line, one empty line, and another after the rule.
+    assert_eq!(
+        lay_out("x<br><br><hr width=60%><br>y", 100.0).text,
+        "x\n\n\ny"
+    );
+    assert_eq!(lay_out("a<br><div>b</div>", 100.0).text, "a\nb");
+    assert_eq!(lay_out("a<br><p>b</p>", 100.0).text, "a\n\nb");
+    assert_eq!(lay_out("a<br><br><br><p>b</p>", 100.0).text, "a\n\n\nb");
+    assert_eq!(lay_out("<p>a</p><br>b", 100.0).text, "a\n\n\nb");
+}
+
+#[test]
 fn the_canvas_takes_the_background_of_the_root_or_body() {
     let color = |page: &str| lay_out(page, 100.0).canvas;
     let red = Some(ron_browser_core::Color::rgb(255, 0, 0));
