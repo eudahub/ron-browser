@@ -4,6 +4,7 @@
 
 #include <QAction>
 #include <QBuffer>
+#include <QDir>
 #include <QFile>
 #include <QImage>
 #include <QLineEdit>
@@ -62,6 +63,8 @@ private slots:
     void stoppingAnArrivalKeepsWhatCame();
     void backDropsAPageThatDoesNotShowYet();
     void aButtonOfTheMouseGoesBack();
+    void aPageFromTheNetworkIsSaved();
+    void aLocalPageIsNotSaved();
 
 private:
     void answerRequest(QTcpSocket *socket);
@@ -496,6 +499,27 @@ void MainWindowTest::aButtonOfTheMouseGoesBack()
     QCOMPARE(window->windowTitle(), QStringLiteral("First"));
     QTest::mouseClick(window->pageView()->viewport(), Qt::ForwardButton, Qt::NoModifier, QPoint(300, 300));
     QCOMPARE(window->windowTitle(), QStringLiteral("Second"));
+}
+
+void MainWindowTest::aPageFromTheNetworkIsSaved()
+{
+    window->openPage(serverAddress("/net.html"));
+    QTRY_COMPARE_WITH_TIMEOUT(window->windowTitle(), QStringLiteral("On the net"), 5000);
+    QTemporaryDir saved;
+    window->savePageInto(saved.path());
+    QTRY_VERIFY_WITH_TIMEOUT(window->statusBar()->currentMessage().startsWith(QStringLiteral("Saved to")), 5000);
+    QFile page(saved.filePath("127.0.0.1/page.html"));
+    QVERIFY(page.open(QIODevice::ReadOnly));
+    QVERIFY(page.readAll().startsWith("<title>On the net</title>"));
+    QVERIFY(QFile::exists(saved.filePath("127.0.0.1/files.txt")));
+}
+
+void MainWindowTest::aLocalPageIsNotSaved()
+{
+    QTemporaryDir saved;
+    window->savePageInto(saved.path());
+    QVERIFY(window->statusBar()->currentMessage().startsWith(QStringLiteral("Only a page")));
+    QVERIFY(QDir(saved.path()).isEmpty());
 }
 
 QTEST_MAIN(MainWindowTest)

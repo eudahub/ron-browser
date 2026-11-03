@@ -59,7 +59,7 @@ QString asQString(const rust::String &text)
 
 MainWindow::MainWindow(std::string forcedEncoding)
     : view(new PageView(this)), forcedEncoding(std::move(forcedEncoding)), history(ron_browser::new_history()),
-      addressBar(new QLineEdit(this)), fetchTimer(new QTimer(this))
+      addressBar(new QLineEdit(this)), fetchTimer(new QTimer(this)), saveTimer(new QTimer(this))
 {
     setCentralWidget(view);
     statusBar();
@@ -68,6 +68,8 @@ MainWindow::MainWindow(std::string forcedEncoding)
 
     auto *fileMenu = menuBar()->addMenu(tr("&File"));
     fileMenu->addAction(tr("&Open..."), QKeySequence::Open, this, &MainWindow::chooseFile);
+    saveAction = fileMenu->addAction(tr("&Save Page with Scripts..."), QKeySequence::Save, this,
+                                     &MainWindow::chooseSaveDirectory);
     fileMenu->addAction(tr("&Quit"), QKeySequence::Quit, this, &QWidget::close);
     auto *editMenu = menuBar()->addMenu(tr("&Edit"));
     editMenu->addAction(tr("&Copy"), QKeySequence::Copy, view, &PageView::copySelection);
@@ -96,6 +98,8 @@ MainWindow::MainWindow(std::string forcedEncoding)
 
     fetchTimer->setInterval(30);
     connect(fetchTimer, &QTimer::timeout, this, &MainWindow::checkFetch);
+    saveTimer->setInterval(100);
+    connect(saveTimer, &QTimer::timeout, this, &MainWindow::checkSave);
 
     connect(addressBar, &QLineEdit::returnPressed, this, &MainWindow::goToTyped);
     connect(view, &PageView::linkActivated, this, &MainWindow::followLink);
@@ -147,6 +151,53 @@ void MainWindow::chooseFile()
         this, tr("Open page"), QString(), tr("Web pages (*.htm *.html);;All files (*)"));
     if (!path.isEmpty()) {
         openPage(path);
+    }
+}
+
+void MainWindow::chooseSaveDirectory()
+{
+    const QString directory = QFileDialog::getExistingDirectory(this, tr("Save page into"));
+    if (!directory.isEmpty()) {
+        savePageInto(directory);
+    }
+}
+
+void MainWindow::savePageInto(const QString &directory)
+{
+    const QByteArray address = loadedAddress.toUtf8();
+    if (loadedAddress.isEmpty() || !asQString(ron_browser::local_path(asStr(address))).isEmpty()) {
+        statusBar()->showMessage(tr("Only a page from the network can be saved."));
+        return;
+    }
+    const QByteArray parent = directory.toUtf8();
+    pageSave = ron_browser::start_page_save(asStr(address), asStr(parent));
+    saveTimer->start();
+    saveAction->setEnabled(false);
+    statusBar()->showMessage(tr("Saving %1").arg(shownAddress(loadedAddress)));
+}
+
+void MainWindow::checkSave()
+{
+    while (pageSave) {
+        const ron_browser::SaveEvent event = (*pageSave)->poll();
+        if (event.kind == ron_browser::SaveEventKind::Nothing) {
+            return;
+        }
+        if (event.kind == ron_browser::SaveEventKind::Progress) {
+            statusBar()->showMessage(tr("Saving: %1 of %2 files").arg(event.done).arg(event.known));
+            continue;
+        }
+        if (event.kind == ron_browser::SaveEventKind::Finished) {
+            statusBar()->showMessage(tr("Saved to %1: %2 files, %3 could not be read")
+                                         .arg(asQString(event.directory))
+                                         .arg(event.saved)
+                                         .arg(event.failed));
+        } else {
+            statusBar()->showMessage(tr("Cannot save it: %1").arg(shownAddress(asQString(event.error))));
+        }
+        saveTimer->stop();
+        pageSave.reset();
+        saveAction->setEnabled(true);
     }
 }
 

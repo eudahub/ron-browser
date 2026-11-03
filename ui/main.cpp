@@ -16,9 +16,11 @@
 
 #include "pageview.h"
 
+#include <chrono>
 #include <iostream>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 
 namespace {
@@ -35,7 +37,8 @@ const char usage[] =
     "       ron-browser [--encoding NAME] --print FILE\n"
     "       ron-browser [--encoding NAME] --screenshot PNG [--select X1 Y1 X2 Y2] [FILE or ADDRESS]\n"
     "       ron-browser [--encoding NAME] --page-shot PNG [--size WIDTHxHEIGHT] FILE\n"
-    "       ron-browser [--encoding NAME] --decode FILE\n";
+    "       ron-browser [--encoding NAME] --decode FILE\n"
+    "       ron-browser --save-page DIRECTORY ADDRESS\n";
 
 int printPage(const QString &path, const std::string &encoding)
 {
@@ -63,6 +66,34 @@ int decodePage(const QString &path, const std::string &encoding)
     return 0;
 }
 
+// Saves a page without showing any of it. Needs no window, and so no display.
+int savePage(const QString &directory, const QString &address)
+{
+    const QByteArray addressBytes = address.toUtf8();
+    const auto target = ron_browser::resolve_address(rust::Str(addressBytes.constData(), static_cast<size_t>(addressBytes.size())));
+    if (target.kind != ron_browser::LinkKind::Page || !ron_browser::local_path(target.place).empty()) {
+        std::cerr << address.toStdString() << ": only a page on the network can be saved\n";
+        return 1;
+    }
+    const QByteArray parent = directory.toUtf8();
+    auto save = ron_browser::start_page_save(target.place, rust::Str(parent.constData(), static_cast<size_t>(parent.size())));
+    while (true) {
+        const ron_browser::SaveEvent event = save->poll();
+        if (event.kind == ron_browser::SaveEventKind::Finished) {
+            std::cout << "saved to " << std::string(event.directory) << ": " << event.saved << " files, "
+                      << event.failed << " could not be read\n";
+            return 0;
+        }
+        if (event.kind == ron_browser::SaveEventKind::Failed) {
+            std::cerr << address.toStdString() << ": " << std::string(event.error) << "\n";
+            return 1;
+        }
+        if (event.kind == ron_browser::SaveEventKind::Nothing) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+    }
+}
+
 // A shot of the whole page alone, without the window around it, for comparing with others.
 int shootPage(const QString &path, const std::string &encoding, const QString &out, QSize size)
 {
@@ -85,6 +116,7 @@ int main(int argc, char *argv[])
     std::string encoding;
     QString path;
     QString screenshot;
+    QString saveDirectory;
     bool print = false;
     bool decode = false;
     QString pageShot;
@@ -110,6 +142,8 @@ int main(int argc, char *argv[])
             }
         } else if (argument == "--slow-load" && index + 1 < argc) {
             slowLoadSeconds = std::stoi(argv[++index]);
+        } else if (argument == "--save-page" && index + 1 < argc) {
+            saveDirectory = QString::fromLocal8Bit(argv[++index]);
         } else if (argument == "--print") {
             print = true;
         } else if (argument == "--decode") {
@@ -120,6 +154,13 @@ int main(int argc, char *argv[])
             std::cerr << usage;
             return 2;
         }
+    }
+    if (!saveDirectory.isEmpty()) {
+        if (path.isEmpty()) {
+            std::cerr << usage;
+            return 2;
+        }
+        return savePage(saveDirectory, path);
     }
     if (print || decode) {
         if (path.isEmpty()) {

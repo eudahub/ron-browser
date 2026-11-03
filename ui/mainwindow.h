@@ -17,6 +17,7 @@ class QTimer;
 
 namespace ron_browser {
 struct PageFetch;
+struct PageSave;
 struct FetchEvent;
 struct StreamDecoder;
 struct History;
@@ -35,12 +36,17 @@ public:
     bool isLoading() const;
     // For trying out pages that are still arriving: local files then take this long to come.
     void setArrivalSeconds(int seconds);
+    // Saves the page from the network that is shown, unchanged, with its scripts and style sheets
+    // but no images, into a new directory within this one. See core/src/savepage.rs.
+    void savePageInto(const QString &directory);
     // For a screenshot, which must not wait for the delay after a resize.
     void layOutNow();
     PageView *pageView() const;
 
 private:
     void chooseFile();
+    void chooseSaveDirectory();
+    void checkSave();
     enum class LocalLoad { Failed, Shown, Waiting };
     // Reads a local file into the view. When it cannot be read, says so and leaves what is shown.
     // A large page, or one with style sheets on the network, goes on through fetchTimer.
@@ -85,8 +91,11 @@ private:
     QAction *forwardAction;
     QAction *reloadAction;
     QAction *stopAction;
+    QAction *saveAction;
     QLineEdit *addressBar;
     QTimer *fetchTimer;
+    QTimer *saveTimer;
+    std::optional<rust::Box<ron_browser::PageSave>> pageSave;
     QString loadedAddress;
     int arrivalSeconds = 0;
     std::optional<rust::Box<ron_browser::PageFetch>> pageFetch;

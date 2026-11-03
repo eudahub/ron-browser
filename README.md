@@ -43,6 +43,20 @@ sheets over HTTP. What a server does not call CSS is not read as a style sheet. 
 64 MB, an image 32 MB and a style sheet 16 MB, counted after unpacking, with at most 128 style sheets,
 and a request may take 60 seconds. Forms are not sent yet, and pages in encodings that cpg-rs lacks, like Shift-JIS, come out wrong.
 
+## Saving a page
+
+File > Save Page with Scripts, or `--save-page` without any window, saves a page from the network
+for looking at what it runs: into a new directory named after its server, `page.html` exactly as the
+server gave it, with its scripts in `scripts/` and style sheets in `styles/`, also those they import.
+Links are not changed and images stay out, so this is not for viewing from the disk. `files.txt`
+tells for each file where it came from, and what could not be read and why.
+
+A hostile page decides nothing on the disk: nothing is overwritten or made executable, and a name
+from a server keeps only harmless characters, with the ending `.js` or `.css`. The same rules as for
+showing a page hold for what is read, and nothing is run. Opening the saved `page.html` in another
+browser would run its scripts, so look at it as text. The page is read anew for this, and scripts
+only named from within other scripts are not found.
+
 ## Selecting text
 
 Text can be selected with the mouse and copied with Ctrl+C or from the Edit menu; Ctrl+A selects
@@ -90,6 +104,7 @@ build/ron-browser --print page.html            # the same as text, without a win
 build/ron-browser --screenshot out.png page.html
 build/ron-browser --encoding mazovia page.htm  # any encoding name cpg-rs knows
 build/ron-browser --slow-load 30 page.html     # a file arrives as if over a slow network, over 30 s
+build/ron-browser --save-page DIR https://...  # the page with its scripts and style sheets, unchanged
 ```
 
 ## Installing

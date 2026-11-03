@@ -9,7 +9,7 @@ use ron_browser_core::layout::{self, ItemKind, TextMeasurer};
 use ron_browser_core::links::{self, Target};
 use ron_browser_core::selection::{Selection, Unit};
 use ron_browser_core::{Color, charset};
-use ron_browser_core::{history, net, page};
+use ron_browser_core::{history, net, page, savepage};
 
 #[allow(unsafe_code)]
 #[cxx::bridge(namespace = "ron_browser")]
@@ -91,6 +91,30 @@ mod ffi {
         bytes: Vec<u8>,
         mime: String,
         charset: String,
+    }
+
+    /// What can happen with a page being saved.
+    enum SaveEventKind {
+        /// Nothing new.
+        Nothing,
+        Progress,
+        Finished,
+        Failed,
+    }
+
+    /// Something that has happened with a page being saved.
+    struct SaveEvent {
+        kind: SaveEventKind,
+        /// How many files are done, of how many known so far.
+        done: usize,
+        known: usize,
+        /// Where it has gone.
+        directory: String,
+        saved: usize,
+        /// How many files could not be read.
+        failed: usize,
+        /// What went wrong with all of it, or empty.
+        error: String,
     }
 
     /// How the encoding of a page was found.
@@ -178,6 +202,12 @@ mod ffi {
         /// whose link it is, or empty when the user asks for it directly.
         fn start_page_fetch(address: &str, asking_page: &str) -> Box<PageFetch>;
         fn poll(self: &mut PageFetch) -> FetchEvent;
+
+        type PageSave;
+
+        /// Starts saving the page at this address, into a new directory within `parent`.
+        fn start_page_save(address: &str, parent: &str) -> Box<PageSave>;
+        fn poll(self: &mut PageSave) -> SaveEvent;
 
         type StreamDecoder;
 
@@ -572,6 +602,49 @@ impl PageFetch {
             Some(net::PageEvent::Failed(error)) => {
                 result.kind = ffi::FetchEventKind::Failed;
                 result.error = error.to_string();
+            }
+        }
+        result
+    }
+}
+
+/// A page being saved, in a type of this crate as the bridge requires.
+pub struct PageSave(savepage::PageSave);
+
+fn start_page_save(address: &str, parent: &str) -> Box<PageSave> {
+    Box::new(PageSave(savepage::PageSave::start(
+        address,
+        Path::new(parent),
+    )))
+}
+
+impl PageSave {
+    fn poll(&mut self) -> ffi::SaveEvent {
+        let mut result = ffi::SaveEvent {
+            kind: ffi::SaveEventKind::Nothing,
+            done: 0,
+            known: 0,
+            directory: String::new(),
+            saved: 0,
+            failed: 0,
+            error: String::new(),
+        };
+        match self.0.poll() {
+            None => {}
+            Some(savepage::SaveEvent::Progress { done, known }) => {
+                result.kind = ffi::SaveEventKind::Progress;
+                result.done = done;
+                result.known = known;
+            }
+            Some(savepage::SaveEvent::Finished(summary)) => {
+                result.kind = ffi::SaveEventKind::Finished;
+                result.directory = summary.directory.to_string_lossy().into_owned();
+                result.saved = summary.saved;
+                result.failed = summary.failed;
+            }
+            Some(savepage::SaveEvent::Failed(error)) => {
+                result.kind = ffi::SaveEventKind::Failed;
+                result.error = error;
             }
         }
         result

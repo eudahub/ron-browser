@@ -30,7 +30,7 @@ const MAX_REDIRECTS: usize = 10;
 /// How long one fetch may take, with all of its redirects counted apart.
 const TIMEOUT: Duration = Duration::from_secs(60);
 const USER_AGENT: &str = concat!("ron-browser/", env!("CARGO_PKG_VERSION"));
-const MAX_SHEET_BYTES: u64 = 16 * 1024 * 1024;
+pub(crate) const MAX_SHEET_BYTES: u64 = 16 * 1024 * 1024;
 const PAGE_ACCEPT: &str = "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1";
 /// A page comes in pieces of at most this size, of which only so many wait for being taken.
 const PIECE_BYTES: usize = 64 * 1024;
@@ -217,7 +217,7 @@ fn check_rules(asker: Asker<'_>, url: &Url) -> Result<bool, FetchError> {
 }
 
 /// Reads an address, following redirects. `accept` tells the server what is wanted.
-fn fetch_limited(
+pub(crate) fn fetch_limited(
     address: &str,
     asker: Asker<'_>,
     accept: &str,
