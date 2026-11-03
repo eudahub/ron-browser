@@ -3,12 +3,14 @@ Web browser built on the [ron](https://github.com/eudahub/ron) engine, with a wi
 
 The current stage shows pages from files and from the web: blocks with margins, padding, borders and
 backgrounds, wrapped text with fonts, colors, alignment and decorations, list markers, images,
-background images, floats, inline blocks, tables, image maps and style sheets. Text aims to land where
-it does in Firefox. Flexible and grid layouts stack as blocks, and positioned boxes stay in the flow, so
+background images, floats, inline blocks, tables, flexible boxes, image maps and style sheets. Text aims
+to land where it does in Firefox. Grid layouts stack as blocks, and positioned boxes stay in the flow, so
 many pages on the web still look quite different from how they should. Form controls do not draw yet.
 
-A table shows once all of it has come, as the width of its columns depends on all its cells, and
-`table-layout: fixed` counts as automatic. `examples/tables.html` shows what tables can do.
+A table or flexible box shows once all of it has come, as how wide its parts are depends on all of them,
+so a page held together by one around everything shows only at its end. `table-layout: fixed` counts as
+automatic. In flexible boxes columns do not wrap, `align-content` counts as stretching and baselines as
+the start. `examples/tables.html` and `examples/flex.html` show what they can do.
 
 ## Links and history
 

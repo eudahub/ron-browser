@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Flexible boxes</title>
+<style>
+  body { font-family: sans-serif; margin: 20px; max-width: 860px; }
+  h2 { font-size: 17px; margin: 26px 0 8px; }
+  .row { display: flex; background: #eef1f6; padding: 6px; }
+  .box { background: #fff; border: 1px solid #889; padding: 6px 10px; }
+  nav { display: flex; align-items: center; gap: 16px; background: #24324a; color: #fff; padding: 10px 14px; }
+  nav a { color: #cfe0ff; }
+  nav .login { margin-left: auto; background: #3f6fd8; padding: 4px 10px; color: #fff; }
+  .cards { display: flex; flex-wrap: wrap; gap: 10px; }
+  .card { flex: 1 1 200px; background: #fff7e6; border: 1px solid #d9b679; padding: 10px; }
+  .card h3 { margin: 0 0 6px; font-size: 15px; }
+  .page { display: flex; min-height: 200px; gap: 10px; }
+  .side { flex: 0 0 150px; background: #e8f3e8; padding: 10px; }
+  .main { flex: 1; background: #f4f4fb; padding: 10px; display: flex; flex-direction: column; }
+  .main .end { margin-top: auto; border-top: 1px solid #aab; padding-top: 6px; }
+  .centered { display: flex; height: 110px; align-items: center; justify-content: center; background: #f3e8f5; }
+</style>
+</head>
+<body>
+<h1>Flexible boxes</h1>
+
+<h2>A menu: pushed to the sides with an automatic margin</h2>
+<nav><b>Forum</b><a href="#">Topics</a><a href="#">Members</a><a href="#">Search</a><span class="login">Log in</span></nav>
+
+<h2>justify-content</h2>
+<div class="row" style="justify-content: flex-start"><div class="box">start</div><div class="box">two</div></div>
+<div class="row" style="justify-content: center"><div class="box">center</div><div class="box">two</div></div>
+<div class="row" style="justify-content: flex-end"><div class="box">end</div><div class="box">two</div></div>
+<div class="row" style="justify-content: space-between"><div class="box">between</div><div class="box">two</div><div class="box">three</div></div>
+<div class="row" style="justify-content: space-around"><div class="box">around</div><div class="box">two</div><div class="box">three</div></div>
+
+<h2>flex-grow: shares of what is free, 1, 2 and none</h2>
+<div class="row"><div class="box" style="flex-grow: 1">1</div><div class="box" style="flex-grow: 2">2</div><div class="box">none</div></div>
+
+<h2>align-items, in a row made high by its first item</h2>
+<div class="row" style="align-items: stretch"><div class="box">first<br>second<br>third</div><div class="box">stretch</div></div>
+<div class="row" style="align-items: flex-start"><div class="box">first<br>second<br>third</div><div class="box">start</div></div>
+<div class="row" style="align-items: center"><div class="box">first<br>second<br>third</div><div class="box">center</div></div>
+<div class="row" style="align-items: flex-end"><div class="box">first<br>second<br>third</div><div class="box">end</div></div>
+
+<h2>Cards that wrap into lines, and share each line</h2>
+<div class="cards">
+  <div class="card"><h3>First</h3>Some text that is about as long as the others.</div>
+  <div class="card"><h3>Second</h3>Some more text, of which there is somewhat more than in the first.</div>
+  <div class="card"><h3>Third</h3>Text.</div>
+  <div class="card"><h3>Fourth</h3>This one ends up in a line with others, or alone, as the width allows.</div>
+  <div class="card"><h3>Fifth</h3>And so does this one.</div>
+</div>
+
+<h2>A page: a side bar, and content with its end at the bottom</h2>
+<div class="page">
+  <div class="side">Side bar of a set width, as high as the content beside it.</div>
+  <div class="main">
+    <div>The content takes all the rest of the width, and is itself a column of flexible items.</div>
+    <div class="end">This stays at the bottom, by an automatic margin.</div>
+  </div>
+</div>
+
+<h2>In the middle both ways, which used to be so hard</h2>
+<div class="centered"><div class="box">Right in the middle</div></div>
+
+<h2>A row that goes the other way, and order</h2>
+<div class="row" style="flex-direction: row-reverse"><div class="box">written first</div><div class="box">written second</div></div>
+<div class="row"><div class="box" style="order: 2">order 2</div><div class="box" style="order: 1">order 1</div></div>
+</body>
+</html>

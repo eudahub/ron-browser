@@ -18,10 +18,8 @@ use ron::css::{
 };
 use ron::html::{NodeId, NodeKind};
 
-use super::{BoxSides, Color, Frame, InlineReturn, Layouter, Margin, resolve};
+use super::{BoxSides, Color, Frame, InlineReturn, Layouter, MAX_NESTED_LAYOUTS, Margin, resolve};
 
-/// Each level of tables measures all it holds, so deeper ones stack as blocks.
-const MAX_TABLE_DEPTH: usize = 32;
 /// As in the HTML standard.
 const MAX_COLUMN_SPAN: u32 = 1000;
 const MAX_ROW_SPAN: u32 = 65534;
@@ -333,7 +331,8 @@ impl Layouter<'_> {
         if let Some(found) = self.table_grids.get(&table.index()) {
             return found.clone();
         }
-        let grid = if self.tables.len() + self.grid_depth >= MAX_TABLE_DEPTH {
+        let grid = if self.tables.len() + self.flexes.len() + self.grid_depth >= MAX_NESTED_LAYOUTS
+        {
             None
         } else {
             self.grid_depth += 1;

@@ -6,8 +6,10 @@
 //! not the geometry. List markers live apart from it, so they cannot be selected.
 //!
 //! Floats take their place at the side, and lines of text go around them. Tables are in
-//! [`table`]. Not handled yet: positioned boxes, which stay in the flow.
+//! [`table`] and flexible boxes in [`flex`]. Not handled yet: positioned boxes, which stay in the
+//! flow.
 
+mod flex;
 mod table;
 
 use std::collections::HashMap;
@@ -310,6 +312,8 @@ struct Frame {
     inline_return: Option<Box<InlineReturn>>,
     /// What to go back to when this block is a cell of a table.
     cell_return: Option<Box<InlineReturn>>,
+    /// What to go back to when this block is an item of a flexible box.
+    flex_return: Option<Box<InlineReturn>>,
     background_tile: Option<usize>,
     padding_top: f32,
     margin_bottom: f32,
@@ -428,8 +432,11 @@ struct Layouter<'a> {
     /// What has been worked out about tables, as those around them need it too. Nothing when an
     /// element is not made up as a table.
     table_grids: HashMap<usize, Option<Rc<table::TableGrid>>>,
-    /// How many tables are being measured around the current one.
+    /// How many tables and flexible boxes are being measured around the current one.
     grid_depth: usize,
+    /// The flexible boxes open around the current position, of which the same holds.
+    flexes: Vec<flex::FlexState>,
+    flex_contents: HashMap<usize, Option<Rc<flex::FlexContent>>>,
 }
 
 /// Lays out a document in a view of this width.
@@ -512,6 +519,8 @@ pub fn layout_more(
         tables: Vec::new(),
         table_grids: HashMap::new(),
         grid_depth: 0,
+        flexes: Vec::new(),
+        flex_contents: HashMap::new(),
     };
     let position = layouter.run(state.position);
     if complete {
@@ -631,6 +640,7 @@ impl LayoutState {
                 float_return: None,
                 inline_return: None,
                 cell_return: None,
+                flex_return: None,
                 background_tile: None,
                 padding_top: 0.0,
                 margin_bottom: 0.0,
@@ -808,10 +818,11 @@ impl Layouter<'_> {
             {
                 return Position::At(id);
             }
-            // The columns of a table depend on all of it.
+            // The columns of a table depend on all of it, and so do the items of a flexible box.
             if document.kind(id) == NodeKind::Element
                 && self.is_open(id)
-                && table::is_table(self.styles.get(id).display)
+                && (table::is_table(self.styles.get(id).display)
+                    || flex::is_flex(self.styles.get(id).display))
             {
                 if is_block(self.styles.get(id).display) {
                     self.flush_inline();
@@ -821,7 +832,9 @@ impl Layouter<'_> {
             let descend = match document.kind(id) {
                 NodeKind::Element => self.enter_element(id),
                 NodeKind::Text => {
-                    if !self.in_table_structure() {
+                    if self.in_flex_structure() {
+                        self.add_flex_text(id);
+                    } else if !self.in_table_structure() {
                         self.add_text(id);
                     }
                     false
@@ -938,17 +951,25 @@ impl Layouter<'_> {
             return false;
         }
         self.note_link_and_anchor(id);
-        if self.document.tag(id) == Tag::Img {
+        let in_flex_structure = self.in_flex_structure();
+        if self.document.tag(id) == Tag::Img && !in_flex_structure {
             self.add_image(id, style);
             return false;
         }
-        if style.text_decoration != 0 {
+        if style.text_decoration != 0 && self.document.tag(id) != Tag::Img {
             let all = self.current_decoration() | style.text_decoration;
             self.decorations.push((id, all));
         }
         if in_table_structure {
             self.enter_table_part(id, style);
             return true;
+        }
+        if in_flex_structure {
+            let goes_on = self.enter_flex_item(id, style);
+            if goes_on {
+                self.begin_inner_layout(id, style);
+            }
+            return goes_on;
         }
         if style.float != Float::None {
             self.flush_inline();
@@ -966,10 +987,17 @@ impl Layouter<'_> {
                 self.clear_floats(style.clear);
             }
         }
+        self.begin_inner_layout(id, style);
+        true
+    }
+
+    /// Starts on what an element lays out in a way of its own, once its box has been opened.
+    fn begin_inner_layout(&mut self, id: NodeId, style: &ComputedStyle) {
         if table::is_table(style.display) {
             self.begin_table(id);
+        } else if flex::is_flex(style.display) {
+            self.begin_flex(id);
         }
-        true
     }
 
     /// Notes what the element is for links: one itself, or a place that they can lead to.
@@ -1162,6 +1190,9 @@ impl Layouter<'_> {
             && self.frames.last().is_some_and(|frame| frame.node == id)
         {
             self.finish_table();
+        }
+        if self.in_flex_structure() && self.frames.last().is_some_and(|frame| frame.node == id) {
+            self.finish_flex(id);
         }
         if self.frames.last().is_some_and(|frame| frame.node == id) {
             self.flush_inline();
@@ -1460,6 +1491,7 @@ impl Layouter<'_> {
             float_return: None,
             inline_return: None,
             cell_return: None,
+            flex_return: None,
             background_tile,
             padding_top,
             margin_bottom: resolve(style.margin.bottom, available).unwrap_or(0.0),
@@ -1651,9 +1683,7 @@ impl Layouter<'_> {
     /// measuring each word, and how wide it is without any wrapping. Walks the tree without
     /// recursion, apart from what has a size of its own.
     fn content_widths(&mut self, id: NodeId, depth: usize, want_least: bool) -> (f32, f32) {
-        if table::is_table(self.styles.get(id).display)
-            && let Some((least, wanted)) = self.table_widths(id)
-        {
+        if let Some((least, wanted)) = self.own_layout_widths(id) {
             return (least.ceil(), wanted.ceil());
         }
         let document = self.document;
@@ -1691,17 +1721,15 @@ impl Layouter<'_> {
                             least = least.max(smallest + sides.horizontal() + around);
                         } else if is_block(style.display)
                             && (table::is_table(style.display)
+                                || flex::is_flex(style.display)
                                 || matches!(style.width, Size::Px(_)))
                         {
                             // It has a size of its own, whatever it holds.
                             widest = widest.max(line + around);
                             line = 0.0;
                             space = 0.0;
-                            let (mut smallest, mut width) = if table::is_table(style.display) {
-                                self.table_widths(node).unwrap_or((0.0, 0.0))
-                            } else {
-                                (0.0, 0.0)
-                            };
+                            let (mut smallest, mut width) =
+                                self.own_layout_widths(node).unwrap_or((0.0, 0.0));
                             if let Size::Px(own) = style.width {
                                 smallest = smallest.max(own);
                                 width = smallest;
@@ -1788,6 +1816,18 @@ impl Layouter<'_> {
             });
         }
         (least.ceil(), widest.max(line + around).ceil())
+    }
+
+    /// How narrow and how wide an element is that lays out what it holds in a way of its own.
+    fn own_layout_widths(&mut self, id: NodeId) -> Option<(f32, f32)> {
+        let display = self.styles.get(id).display;
+        if table::is_table(display) {
+            self.table_widths(id)
+        } else if flex::is_flex(display) {
+            self.flex_widths(id)
+        } else {
+            None
+        }
     }
 
     /// The width of a word, remembered per font.
@@ -1999,6 +2039,7 @@ impl Layouter<'_> {
                 || frame.min_height > 0.0
                 || frame.lowest_float > 0.0
                 || frame.cell_return.is_some()
+                || frame.flex_return.is_some()
         };
         if needs_room {
             if self.frames.last().is_some_and(|frame| frame.top.is_some()) {
@@ -2034,6 +2075,10 @@ impl Layouter<'_> {
         let bottom = content_top + content_height + frame.bottom_inset;
         if let Some(saved) = frame.cell_return.take() {
             self.close_cell(&frame, *saved, top, bottom);
+            return;
+        }
+        if let Some(saved) = frame.flex_return.take() {
+            self.close_flex_item(&frame, *saved, top, bottom);
             return;
         }
         self.cursor = bottom;
@@ -2776,6 +2821,8 @@ const MAX_MAP_AREAS: usize = 100_000;
 /// Finding how wide an inline block wants to be walks all it holds, for each block around it, so
 /// deeper ones stay ordinary inline elements.
 const MAX_INLINE_BOX_DEPTH: usize = 32;
+/// Each level of tables and flexible boxes measures all it holds, so deeper ones stack as blocks.
+const MAX_NESTED_LAYOUTS: usize = 32;
 
 /// The margins, borders and padding of a box.
 struct BoxSides {
