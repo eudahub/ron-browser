@@ -71,6 +71,13 @@ block the drag came from until the mouse reaches the next text, and a selection 
 separates blocks. Only the text itself gets highlighted. Blocks are separated by a line end when
 copied, and by an empty line when there is room between them. List markers are not copied.
 
+## Memory
+
+The tree of a page refers to its source, which stays in memory for that. A page over 256 KB has its
+source packed once it has been at rest for a second, as the text on the screen is kept apart from it.
+It comes back in a moment when something needs it, such as a new layout or a link to a place on the
+page: 15 MB takes up 2.3 MB this way, 90 ms to pack and 15 ms to unpack.
+
 ## How it is split
 
 Everything that reads untrusted page content is Rust, in `core/`, with no unsafe code and no

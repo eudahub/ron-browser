@@ -186,7 +186,9 @@ mod ffi {
         /// The address of the link at a point of the page, or an empty string.
         fn link_at(self: &Page, x: f32, y: f32) -> &str;
         /// How far down the page a place of this name is, or a negative number if it has none.
-        fn fragment_y(self: &Page, fragment: &str) -> f32;
+        fn fragment_y(self: &mut Page, fragment: &str) -> f32;
+        /// Keeps the source in less memory until it is needed, for when things have come to rest.
+        fn pack_source(self: &mut Page);
         /// Finds where a link in the page at this address leads.
         fn resolve_link(page_address: &str, href: &str) -> LinkTarget;
         /// Finds where an address typed by the user leads.
@@ -510,8 +512,13 @@ impl Page {
         self.page.layout().link_at(x, y).unwrap_or("")
     }
 
-    fn fragment_y(&self, fragment: &str) -> f32 {
+    fn fragment_y(&mut self, fragment: &str) -> f32 {
+        self.page.unpack_source();
         self.page.fragment_y(fragment).unwrap_or(-1.0)
+    }
+
+    fn pack_source(&mut self) {
+        self.page.pack_source();
     }
 
     fn layout_width(&self) -> f32 {

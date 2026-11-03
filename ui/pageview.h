@@ -95,6 +95,7 @@ protected:
 
 private:
     void takeImages();
+    void packSource();
     void forgetPage();
     void forgetShownImages();
     void dropArrival();
@@ -127,6 +128,8 @@ private:
     QTimer *dragScrollTimer;
     QTimer *imageTimer;
     QTimer *arrivalTimer;
+    // Runs after whatever needs the source of the page, so that it goes back to taking little room.
+    QTimer *packTimer;
     size_t arrivedBytes = 0;
     size_t bytesPerPiece = 0;
     QString incomingAddress;

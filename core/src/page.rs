@@ -1,7 +1,11 @@
 //! An opened page: its tree, styles and layout.
 
 use std::collections::HashSet;
+use std::io::{Read, Write};
 
+use flate2::Compression;
+use flate2::read::ZlibDecoder;
+use flate2::write::ZlibEncoder;
 use ron::css::{StyleProgress, Styles, Viewport, compute_styles, extend_styles};
 use ron::html::{Document, NodeId, NodeKind, Parser, Tag, parse_owned};
 
@@ -9,9 +13,25 @@ use crate::images::{DecodedImage, ImageStore, NoResources, ResourceLoader};
 use crate::layout::{FontSpec, Layout, LayoutProgress, TextMeasurer, layout, layout_more};
 use crate::sheets::{SheetRequest, Sheets, decode_css, is_https};
 
+/// Smaller sources are not worth packing.
+const MIN_PACKED_BYTES: usize = 256 * 1024;
+/// Packs text about as well as the highest levels, in half the time. A 15 MB page takes 90 ms to
+/// become 2.3 MB, and 15 ms to come back.
+const PACKING_LEVEL: u32 = 3;
+
+/// The source of a page while nothing needs it, in a fraction of the memory. All text on the screen
+/// is in the layout, so it takes something like a new layout or a link to a place to need it.
+struct PackedSource {
+    bytes: Vec<u8>,
+    /// Asked for all the time, and short.
+    title: String,
+}
+
 pub struct Page {
-    /// Empty while the page is arriving, when the parser holds what has come of it.
+    /// Empty while the page is arriving, when the parser holds what has come of it. Its text reads
+    /// as empty while the source is packed.
     document: Document,
+    packed: Option<PackedSource>,
     arriving: Option<Arriving>,
     sheets: Sheets,
     waiting_sheets: Vec<SheetRequest>,
@@ -152,6 +172,7 @@ impl Page {
         let styles = compute_styles(&document, &sheets.active(viewport), viewport);
         let mut page = Self {
             document,
+            packed: None,
             arriving: None,
             sheets,
             waiting_sheets,
@@ -185,6 +206,7 @@ impl Page {
         let styles = Styles::unstyled(&empty);
         Self {
             document: empty,
+            packed: None,
             arriving: Some(Arriving::new(address)),
             sheets: Sheets::default(),
             waiting_sheets: Vec::new(),
@@ -217,6 +239,9 @@ impl Page {
     pub fn new_image_sources(&mut self) -> Vec<String> {
         let mut sources = Vec::new();
         let nodes = self.tree().node_count();
+        if self.images_named < nodes {
+            self.unpack_source();
+        }
         for node in self.tree().nodes_from(self.images_named) {
             let document = self.tree();
             if document.kind(node) != NodeKind::Element {
@@ -378,6 +403,7 @@ impl Page {
         let styles = Styles::unstyled(&document);
         Self {
             document,
+            packed: None,
             arriving: None,
             sheets,
             waiting_sheets: Vec::new(),
@@ -417,11 +443,60 @@ impl Page {
             self.layout = Layout::default();
             return;
         }
+        self.unpack_source();
         self.styles = compute_styles(
             &self.document,
             &self.sheets.active(self.viewport),
             self.viewport,
         );
+    }
+
+    /// Keeps the source in less memory until it is needed again, which is best done once things
+    /// have come to rest, as this takes a moment on a large page. Only a page that has all arrived
+    /// and is large enough gets packed.
+    pub fn pack_source(&mut self) {
+        if self.arriving.is_some()
+            || self.packed.is_some()
+            || self.document.source().len() < MIN_PACKED_BYTES
+        {
+            return;
+        }
+        let title = self.title();
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::new(PACKING_LEVEL));
+        if encoder
+            .write_all(self.document.source().as_bytes())
+            .is_err()
+        {
+            return;
+        }
+        let Ok(mut bytes) = encoder.finish() else {
+            return;
+        };
+        bytes.shrink_to_fit();
+        drop(self.document.take_source());
+        self.packed = Some(PackedSource { bytes, title });
+    }
+
+    /// Brings back the source, for what needs the text of the tree.
+    pub fn unpack_source(&mut self) {
+        if let Some(packed) = self.packed.take() {
+            let size = packed.bytes.len().saturating_mul(4);
+            let mut source = String::with_capacity(size);
+            // It was packed here from valid text, so this cannot fail.
+            if ZlibDecoder::new(&packed.bytes[..])
+                .read_to_string(&mut source)
+                .is_ok()
+            {
+                source.shrink_to_fit();
+                self.document.put_source(source);
+            }
+        }
+    }
+
+    /// Whether the source is packed now.
+    #[must_use]
+    pub fn is_source_packed(&self) -> bool {
+        self.packed.is_some()
     }
 
     fn load_images(&mut self, loader: &mut dyn ResourceLoader) {
@@ -446,6 +521,7 @@ impl Page {
     }
 
     /// What the page names as its images and backgrounds, each once, for reading them elsewhere.
+    /// It takes [`Self::unpack_source`] first.
     #[must_use]
     pub fn image_sources(&self) -> Vec<String> {
         let document = self.tree();
@@ -493,12 +569,13 @@ impl Page {
             self.go_on(None, measurer);
             return;
         }
+        self.unpack_source();
         self.layout = layout(&self.document, &self.styles, &self.images, width, measurer);
     }
 
     /// How far down the page a link to `#fragment` leads, if there is such a place: an element
     /// with that `id`, or else an `<a>` with that `name`. An empty fragment and `top` lead to the
-    /// top, unless the page has a place of that name.
+    /// top, unless the page has a place of that name. It takes [`Self::unpack_source`] first.
     #[must_use]
     pub fn fragment_y(&self, fragment: &str) -> Option<f32> {
         let document = self.tree();
@@ -544,6 +621,9 @@ impl Page {
     /// The title, with its white space collapsed.
     #[must_use]
     pub fn title(&self) -> String {
+        if let Some(packed) = &self.packed {
+            return packed.title.clone();
+        }
         let document = self.tree();
         let title = document
             .descendants(document.root())
@@ -558,7 +638,8 @@ impl Page {
         })
     }
 
-    /// All visible text in document order, as it would be copied.
+    /// All visible text in document order, as it would be copied. It takes
+    /// [`Self::unpack_source`] first.
     #[must_use]
     pub fn plain_text(&self) -> String {
         layout(

@@ -47,6 +47,8 @@ void giveBackFreeMemory()
 const int arrivalPieceMs = 50;
 // How much of a large local page comes at a time, between which the window goes on.
 const size_t fastPieceBytes = 512 * 1024;
+// How long a page has to be at rest before its source is packed, which takes a moment on a large one.
+const int packAfterMs = 1000;
 // How often images may cause a new layout of a page that is still arriving, all of it each time.
 const qint64 minImageLayoutMs = 1000;
 // A page shows after this long without the style sheets that have not come by then.
@@ -119,8 +121,12 @@ struct PageView::PageHolder {
 
 PageView::PageView(QWidget *parent)
     : QAbstractScrollArea(parent), holder(std::make_unique<PageHolder>()), resizeTimer(new QTimer(this)),
-      dragScrollTimer(new QTimer(this)), imageTimer(new QTimer(this)), arrivalTimer(new QTimer(this))
+      dragScrollTimer(new QTimer(this)), imageTimer(new QTimer(this)), arrivalTimer(new QTimer(this)),
+      packTimer(new QTimer(this))
 {
+    packTimer->setSingleShot(true);
+    packTimer->setInterval(packAfterMs);
+    connect(packTimer, &QTimer::timeout, this, &PageView::packSource);
     arrivalTimer->setInterval(arrivalPieceMs);
     connect(arrivalTimer, &QTimer::timeout, this, &PageView::feedNextPiece);
     // Each new image takes a new layout, so several arriving together should share one.
@@ -437,6 +443,7 @@ void PageView::showIncoming()
     } else {
         layOut();
     }
+    packTimer->start();
     giveBackFreeMemory();
 }
 
@@ -448,6 +455,20 @@ void PageView::dropIncomingPage()
     holder->incomingInPieces = false;
     holder->sheetFetch.reset();
     holder->incoming.reset();
+}
+
+void PageView::packSource()
+{
+    if (!holder->page) {
+        return;
+    }
+    // While something still goes on, this waits for it to end, which starts the timer again.
+    if (holder->arrivalActive || imageTimer->isActive()) {
+        packTimer->start();
+        return;
+    }
+    (*holder->page)->pack_source();
+    giveBackFreeMemory();
 }
 
 void PageView::fetchImages(const QString &pageAddress)
@@ -519,6 +540,7 @@ bool PageView::scrollToFragment(const QString &fragment)
     }
     const QByteArray name = fragment.toUtf8();
     const float y = (*holder->page)->fragment_y(rust::Str(name.constData(), static_cast<size_t>(name.size())));
+    packTimer->start();
     if (y < 0) {
         return false;
     }
@@ -737,6 +759,7 @@ void PageView::layOut()
         const QSize size = viewport()->size();
         (*holder->page)->lay_out(static_cast<float>(size.width()), static_cast<float>(size.height()));
         laidOutWidth = size.width();
+        packTimer->start();
     }
     updateScrollBars();
     viewport()->update();

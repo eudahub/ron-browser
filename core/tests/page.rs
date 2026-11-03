@@ -1,9 +1,96 @@
 //! Reading the title and visible text of a page.
 
+use ron_browser_core::images::NoResources;
+use ron_browser_core::layout::{FontSpec, TextMeasurer};
 use ron_browser_core::page::Page;
 
 fn text(source: &str) -> String {
     Page::open(source).plain_text()
+}
+
+struct Measurer;
+
+impl TextMeasurer for Measurer {
+    fn font(&mut self, _spec: &FontSpec) -> u32 {
+        0
+    }
+    fn width(&mut self, _font: u32, text: &str) -> f32 {
+        8.0 * text.chars().count() as f32
+    }
+    fn ascent(&mut self, _font: u32) -> f32 {
+        13.0
+    }
+    fn descent(&mut self, _font: u32) -> f32 {
+        3.0
+    }
+}
+
+/// Over the size from which a source gets packed.
+fn large_page() -> String {
+    let mut source =
+        "<!DOCTYPE html><title>  The   title </title><body style='margin:0'><p id=first>first"
+            .to_owned();
+    for number in 0..10_000 {
+        source.push_str(&format!(
+            "<p id=place{number} style='margin:0'><a href=to{number}>line {number}</a>"
+        ));
+    }
+    source
+}
+
+#[test]
+fn a_packed_source_comes_back_whole_when_needed() {
+    let mut page = Page::open(&large_page());
+    page.lay_out(800.0, 600.0, &mut Measurer);
+    let before = page.layout().clone();
+    let place = page.fragment_y("place5000");
+    assert!(place.is_some());
+    let all_text = page.plain_text();
+    page.pack_source();
+    assert!(page.is_source_packed());
+    // What is on the screen does not need it.
+    assert_eq!(page.title(), "The title");
+    assert_eq!(*page.layout(), before);
+    assert!(page.layout().link_at(5.0, 60.0).is_some());
+    // Anything looking at the tree brings it back, with the same result.
+    page.lay_out(800.0, 600.0, &mut Measurer);
+    assert!(!page.is_source_packed());
+    assert_eq!(*page.layout(), before);
+    assert_eq!(page.title(), "The title");
+    assert_eq!(page.fragment_y("place5000"), place);
+    assert_eq!(page.plain_text(), all_text);
+}
+
+#[test]
+fn styles_can_be_worked_out_again_from_a_packed_source() {
+    let mut page = Page::open(&large_page());
+    page.lay_out(800.0, 600.0, &mut Measurer);
+    page.pack_source();
+    // Another size asks for styles again too.
+    page.lay_out(400.0, 600.0, &mut Measurer);
+    assert!(!page.is_source_packed());
+    let mut same = Page::open(&large_page());
+    same.lay_out(400.0, 600.0, &mut Measurer);
+    assert_eq!(*page.layout(), *same.layout());
+}
+
+#[test]
+fn only_a_large_page_that_has_arrived_gets_packed() {
+    let mut small = Page::open("<title>small</title><p>text");
+    small.pack_source();
+    assert!(!small.is_source_packed());
+    let viewport = ron_browser_core::Viewport {
+        width: 800.0,
+        height: 600.0,
+    };
+    let mut arriving = Page::open_arriving(viewport);
+    arriving.feed(&large_page(), &mut NoResources, &mut Measurer);
+    arriving.pack_source();
+    assert!(!arriving.is_source_packed());
+    arriving.finish_arriving(&mut NoResources, &mut Measurer);
+    arriving.pack_source();
+    assert!(arriving.is_source_packed());
+    assert_eq!(arriving.title(), "The title");
 }
 
 #[test]
