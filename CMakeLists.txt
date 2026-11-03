@@ -9,7 +9,6 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
-find_package(cpg 1.2 REQUIRED)
 find_program(CARGO cargo REQUIRED)
 
 # The Rust part is a static library. Cargo decides itself whether anything changed.
@@ -49,10 +48,7 @@ add_executable(ron-browser
     ui/textmeasure.cpp
     ui/textmeasure.h)
 target_include_directories(ron-browser PRIVATE ${CXXBRIDGE_INCLUDES})
-target_compile_definitions(ron-browser PRIVATE
-    CPG_LANGUAGES_FILE="${CPG_LANGUAGES_FILE}"
-    CPG_MODELS_DIR="${CPG_MODELS_DIR}")
-target_link_libraries(ron-browser PRIVATE core Qt6::Widgets cpg::cpg ${CMAKE_DL_LIBS})
+target_link_libraries(ron-browser PRIVATE core Qt6::Widgets ${CMAKE_DL_LIBS})
 # The window icon, also when the icon is not installed (:/ron-browser.svg).
 qt_add_resources(ron-browser icons
     PREFIX "/"

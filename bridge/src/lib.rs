@@ -48,6 +48,12 @@ mod ffi {
         replaced: bool,
     }
 
+    /// An encoding found by looking at a page.
+    struct DetectedEncoding {
+        encoding: String,
+        certain: bool,
+    }
+
     /// A rectangle to highlight.
     #[derive(Clone, Copy)]
     struct DrawRect {
@@ -93,6 +99,8 @@ mod ffi {
         fn declared_charset(bytes: &[u8]) -> String;
         fn is_utf8(bytes: &[u8]) -> bool;
         fn is_known_encoding(encoding: &str) -> bool;
+        /// Finds the encoding of a page that does not declare one.
+        fn detect_encoding(bytes: &[u8]) -> DetectedEncoding;
         /// The bytes as UTF-8, with what is invalid replaced.
         fn decode_bytes(bytes: &[u8], encoding: &str) -> DecodedText;
     }
@@ -325,6 +333,14 @@ fn is_utf8(bytes: &[u8]) -> bool {
 
 fn is_known_encoding(encoding: &str) -> bool {
     charset::is_known(encoding)
+}
+
+fn detect_encoding(bytes: &[u8]) -> ffi::DetectedEncoding {
+    let detected = charset::detect(bytes);
+    ffi::DetectedEncoding {
+        encoding: detected.encoding.to_owned(),
+        certain: detected.certain,
+    }
 }
 
 fn decode_bytes(bytes: &[u8], encoding: &str) -> ffi::DecodedText {

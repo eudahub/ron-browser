@@ -5,6 +5,42 @@ pub use cpg::LossyText;
 /// How far into a page a declaration counts, as in the HTML standard.
 const DECLARATION_BYTES: usize = 1024;
 
+/// Detection looks at this much of a page; the rest would only take time.
+const DETECTION_BYTES: usize = 256 * 1024;
+/// How likely the only remaining encoding must be to count as certain.
+const CERTAIN: f64 = 0.95;
+
+/// An encoding found by looking at a page.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Detected {
+    pub encoding: &'static str,
+    pub certain: bool,
+}
+
+/// Finds the encoding of a page that does not declare one. It looks across all languages, as the
+/// language of the system says little about a page's. The language models are large, so they are
+/// only unpacked for a page that needs them, and let go of afterwards.
+#[must_use]
+pub fn detect(bytes: &[u8]) -> Detected {
+    let detector = cpg::Detector::new();
+    let results = detector.detect(&bytes[..bytes.len().min(DETECTION_BYTES)]);
+    let options = cpg::Detector::plausible(&results, CERTAIN);
+    match options.as_slice() {
+        [] => Detected {
+            encoding: "cp1252",
+            certain: false,
+        },
+        [only] => Detected {
+            encoding: only.codepage,
+            certain: only.confidence >= CERTAIN,
+        },
+        [first, ..] => Detected {
+            encoding: first.codepage,
+            certain: false,
+        },
+    }
+}
+
 /// Whether an encoding of this name is known.
 #[must_use]
 pub fn is_known(encoding: &str) -> bool {

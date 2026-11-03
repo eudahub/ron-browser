@@ -29,21 +29,19 @@ Images are decoded in Rust too: PNG, JPEG, GIF (its first frame), WebP and BMP, 
 their size that apply before anything is allocated. A local page can only load images from its own
 directory and below it: no other scheme, and no way out by `..`, an absolute path or a symbolic link.
 
-Legacy encodings are turned into UTF-8 by [cpg-rs](https://github.com/eudahub/cpg-rs). The exception
-for now is detecting the encoding of a page that does not declare one: that is still
-[cpg](https://github.com/eudahub/cpg), in C++. It will move to Rust before the browser reads from a
-network.
+Legacy encodings are found and turned into UTF-8 by [cpg-rs](https://github.com/eudahub/cpg-rs), also
+in Rust. Its language models are built in, so the program needs no data files.
 
 ## Encodings
 
 The encoding comes from, in this order: `--encoding`, a byte order mark, a `<meta>` declaration
-in the first 1024 bytes, the content being valid UTF-8, then detection by cpg across all its
+in the first 1024 bytes, the content being valid UTF-8, then detection by cpg-rs across all its
 languages. The status bar shows which encoding was used and why, including when detection was
 uncertain. Bytes invalid in that encoding are replaced.
 
 ## Building
 
-Needs a C++20 compiler, CMake, Cargo, Qt 6 with Widgets, and an installed cpg with ICU and zlib.
+Needs a C++20 compiler, CMake, Cargo and Qt 6 with Widgets.
 The repositories [ron](https://github.com/eudahub/ron) and [cpg-rs](https://github.com/eudahub/cpg-rs)
 must be checked out next to this one.
 
@@ -53,7 +51,7 @@ cmake --build build -j4
 build/ron-browser page.html
 build/ron-browser --print page.html            # the same as text, without a window
 build/ron-browser --screenshot out.png page.html
-build/ron-browser --encoding mazovia page.htm  # any encoding name cpg knows
+build/ron-browser --encoding mazovia page.htm  # any encoding name cpg-rs knows
 ```
 
 ## Installing
@@ -66,8 +64,8 @@ cmake --install build --prefix ~/.local     # for the current user only
 This installs `ron-browser` to `bin`, `share/applications/ron-browser.desktop` and the icon
 `share/icons/hicolor/scalable/apps/ron-browser.svg`, and refreshes the caches of the desktop, so the
 browser appears in its menu and side bar at once. `--strip` makes the program smaller. Showing the
-icon needs the SVG plugin of Qt (`qt6-svg-plugins`), and detecting encodings the data of the installed
-cpg. Remove the files listed in `build/install_manifest.txt` to uninstall.
+icon needs the SVG plugin of Qt (`qt6-svg-plugins`). Remove the files listed in
+`build/install_manifest.txt` to uninstall.
 
 Install again after every build you want to use from the menu: the installed files are copies.
 

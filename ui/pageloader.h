@@ -9,13 +9,13 @@
 // so this is where legacy encodings end.
 struct DecodedPage {
     std::string utf8;
-    // The encoding used, as cpg names it, and how it was chosen.
+    // The encoding used, as cpg-rs names it, and how it was chosen.
     std::string encoding;
     QString encodingSource;
     QString error;
 };
 
-// `forcedEncoding` is a cpg codepage name chosen by the user, or empty.
+// `forcedEncoding` is a cpg-rs codepage name chosen by the user, or empty.
 DecodedPage loadPage(const QString &path, const std::string &forcedEncoding);
 
 #endif

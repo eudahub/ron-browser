@@ -4,11 +4,6 @@
 #include <QLocale>
 #include <QObject>
 
-#include <cpg/CpManager.h>
-#include <cpg/Detector.h>
-#include <cpg/Language.h>
-#include <cpg/NgramModel.h>
-
 #include <ron-browser-bridge/src/lib.rs.h>
 
 #include <algorithm>
@@ -19,10 +14,8 @@ namespace {
 
 // Larger files are refused, so that opening one cannot exhaust memory.
 const qint64 maxPageBytes = 256 * 1024 * 1024;
-// Detection looks at this much of the page; the rest would only take time.
-const size_t detectionBytes = 256 * 1024;
 
-// Maps a web charset label to a cpg name; empty when cpg does not have it.
+// Maps a web charset label to a cpg-rs name; empty when cpg-rs does not have it.
 std::string codepageForLabel(std::string label)
 {
     std::transform(label.begin(), label.end(), label.begin(),
@@ -38,29 +31,6 @@ std::string codepageForLabel(std::string label)
         label = "cp" + label.substr(8);
     }
     return ron_browser::is_known_encoding(label) ? label : std::string();
-}
-
-struct Detection {
-    std::string encoding;
-    bool certain;
-};
-
-// Looks across all languages: the language of the system says little about a page's. The language
-// models are large, so they are loaded only for a page that needs detecting, and let go of afterwards.
-Detection detectEncoding(std::string_view bytes)
-{
-    Languages languages;
-    languages.readFromFile(CPG_LANGUAGES_FILE);
-    NgramModel model;
-    model.loadDirectory(CPG_MODELS_DIR);
-    CpManager codepages;
-    Detector detector(codepages, languages, &model);
-    const auto results = detector.detectCodepage(bytes.substr(0, detectionBytes));
-    const auto options = Detector::plausible(results);
-    if (options.empty()) {
-        return {"cp1252", false};
-    }
-    return {options.front().codepage, options.size() == 1 && options.front().confidence >= 0.95};
 }
 
 rust::Slice<const uint8_t> asSlice(std::string_view bytes)
@@ -113,9 +83,9 @@ DecodedPage loadPage(const QString &path, const std::string &forcedEncoding)
             page.encodingSource = QObject::tr("valid as such");
             decode(page, bytes, "utf8");
         } else {
-            const Detection detection = detectEncoding(bytes);
+            const auto detection = ron_browser::detect_encoding(asSlice(bytes));
             page.encodingSource = detection.certain ? QObject::tr("detected") : QObject::tr("detected, uncertain");
-            decode(page, bytes, detection.encoding);
+            decode(page, bytes, std::string(detection.encoding));
         }
     }
     return page;
