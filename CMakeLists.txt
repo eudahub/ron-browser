@@ -34,6 +34,10 @@ add_library(core STATIC IMPORTED)
 set_target_properties(core PROPERTIES IMPORTED_LOCATION "${CORE_LIBRARY}")
 add_dependencies(core core_build)
 
+set(CXXBRIDGE_INCLUDES
+    "${CARGO_TARGET_DIR}/cxxbridge"
+    "${CMAKE_SOURCE_DIR}/bridge/include")
+
 add_executable(ron-browser
     ui/main.cpp
     ui/mainwindow.cpp
@@ -44,10 +48,27 @@ add_executable(ron-browser
     ui/pageview.h
     ui/textmeasure.cpp
     ui/textmeasure.h)
-target_include_directories(ron-browser PRIVATE
-    "${CARGO_TARGET_DIR}/cxxbridge"
-    "${CMAKE_SOURCE_DIR}/bridge/include")
+target_include_directories(ron-browser PRIVATE ${CXXBRIDGE_INCLUDES})
 target_compile_definitions(ron-browser PRIVATE
     CPG_LANGUAGES_FILE="${CPG_LANGUAGES_FILE}"
     CPG_MODELS_DIR="${CPG_MODELS_DIR}")
 target_link_libraries(ron-browser PRIVATE core Qt6::Widgets cpg::cpg ${CMAKE_DL_LIBS})
+
+# Runs without a display: ctest --test-dir build --output-on-failure
+option(BUILD_TESTING "Build the tests of the window" ON)
+if(BUILD_TESTING)
+    enable_testing()
+    find_package(Qt6 REQUIRED COMPONENTS Test)
+    add_executable(pageview_test
+        tests/pageview_test.cpp
+        ui/pageview.cpp
+        ui/pageview.h
+        ui/textmeasure.cpp
+        ui/textmeasure.h)
+    target_include_directories(pageview_test PRIVATE ui ${CXXBRIDGE_INCLUDES})
+    target_link_libraries(pageview_test PRIVATE core Qt6::Widgets Qt6::Test ${CMAKE_DL_LIBS})
+    add_test(NAME pageview_test COMMAND pageview_test)
+    set_tests_properties(pageview_test PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        TIMEOUT 60)
+endif()

@@ -20,11 +20,19 @@ MainWindow::MainWindow(std::string forcedEncoding)
     auto *fileMenu = menuBar()->addMenu(tr("&File"));
     fileMenu->addAction(tr("&Open..."), QKeySequence::Open, this, &MainWindow::chooseFile);
     fileMenu->addAction(tr("&Quit"), QKeySequence::Quit, this, &QWidget::close);
+    auto *editMenu = menuBar()->addMenu(tr("&Edit"));
+    editMenu->addAction(tr("&Copy"), QKeySequence::Copy, view, &PageView::copySelection);
+    editMenu->addAction(tr("Select &All"), QKeySequence::SelectAll, view, &PageView::selectAll);
 }
 
 void MainWindow::layOutNow()
 {
     view->layOutNow();
+}
+
+PageView *MainWindow::pageView() const
+{
+    return view;
 }
 
 void MainWindow::chooseFile()

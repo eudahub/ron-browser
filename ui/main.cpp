@@ -3,11 +3,15 @@
 
 #include <QApplication>
 #include <QCoreApplication>
+#include <QLineF>
 #include <QStringList>
 
 #include <ron-browser-bridge/src/lib.rs.h>
 
+#include "pageview.h"
+
 #include <iostream>
+#include <optional>
 #include <string>
 
 namespace {
@@ -15,7 +19,7 @@ namespace {
 const char usage[] =
     "usage: ron-browser [--encoding NAME] [FILE]\n"
     "       ron-browser [--encoding NAME] --print FILE\n"
-    "       ron-browser [--encoding NAME] --screenshot PNG FILE\n";
+    "       ron-browser [--encoding NAME] --screenshot PNG [--select X1 Y1 X2 Y2] FILE\n";
 
 int printPage(const QString &path, const std::string &encoding)
 {
@@ -39,12 +43,17 @@ int main(int argc, char *argv[])
     QString path;
     QString screenshot;
     bool print = false;
+    std::optional<QLineF> selection;
     for (int index = 1; index < argc; ++index) {
         const std::string argument = argv[index];
         if (argument == "--encoding" && index + 1 < argc) {
             encoding = argv[++index];
         } else if (argument == "--screenshot" && index + 1 < argc) {
             screenshot = QString::fromLocal8Bit(argv[++index]);
+        } else if (argument == "--select" && index + 4 < argc) {
+            selection = QLineF(std::stod(argv[index + 1]), std::stod(argv[index + 2]),
+                               std::stod(argv[index + 3]), std::stod(argv[index + 4]));
+            index += 4;
         } else if (argument == "--print") {
             print = true;
         } else if (argument.rfind("-", 0) != 0 && path.isEmpty()) {
@@ -72,6 +81,10 @@ int main(int argc, char *argv[])
     }
     if (!screenshot.isEmpty()) {
         window.layOutNow();
+        if (selection) {
+            // Shows and prints what a drag between these points of the page gives.
+            std::cout << window.pageView()->selectForTest(selection->p1(), selection->p2(), 1).toStdString() << "\n";
+        }
         QCoreApplication::processEvents();
         return window.grab().save(screenshot) ? 0 : 1;
     }

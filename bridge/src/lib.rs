@@ -3,6 +3,7 @@
 
 use ron_browser_core::layout::{self, ItemKind, TextMeasurer};
 use ron_browser_core::page;
+use ron_browser_core::selection::{Selection, Unit};
 use ron_browser_core::{Color, charset};
 
 #[allow(unsafe_code)]
@@ -32,6 +33,15 @@ mod ffi {
         decoration: u8,
     }
 
+    /// A rectangle to highlight.
+    #[derive(Clone, Copy)]
+    struct DrawRect {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    }
+
     extern "Rust" {
         type Page;
 
@@ -47,6 +57,15 @@ mod ffi {
         fn layout_height(self: &Page) -> f32;
         /// As 0xAARRGGBB; 0 leaves the default background.
         fn canvas_color(self: &Page) -> u32;
+
+        /// Starts a selection, by characters, words or blocks after 1, 2 or 3 clicks.
+        fn press(self: &mut Page, x: f32, y: f32, clicks: i32);
+        /// Moves the end of the selection, as a drag or a click with Shift does.
+        fn drag(self: &mut Page, x: f32, y: f32);
+        fn extend(self: &mut Page, x: f32, y: f32);
+        fn select_all(self: &mut Page);
+        fn selected_text(self: &Page) -> String;
+        fn highlights(self: &Page, top: f32, bottom: f32) -> Vec<DrawRect>;
 
         /// The charset a page declares in its first bytes, or an empty string.
         fn declared_charset(bytes: &[u8]) -> String;
@@ -95,6 +114,7 @@ impl TextMeasurer for QtMeasurer {
 pub struct Page {
     page: page::Page,
     items: Vec<ffi::DrawItem>,
+    selection: Option<Selection>,
 }
 
 fn packed(color: Color) -> u32 {
@@ -152,6 +172,56 @@ impl Page {
             .unwrap_or("")
     }
 
+    fn press(&mut self, x: f32, y: f32, clicks: i32) {
+        let unit = match clicks {
+            1 => Unit::Character,
+            2 => Unit::Word,
+            _ => Unit::Block,
+        };
+        self.selection = Selection::start(self.page.layout(), x, y, unit, &mut QtMeasurer);
+    }
+
+    fn drag(&mut self, x: f32, y: f32) {
+        if let Some(selection) = &mut self.selection {
+            selection.drag_to(self.page.layout(), x, y, &mut QtMeasurer);
+        }
+    }
+
+    fn extend(&mut self, x: f32, y: f32) {
+        match &mut self.selection {
+            Some(selection) => selection.extend_to(self.page.layout(), x, y, &mut QtMeasurer),
+            None => self.press(x, y, 1),
+        }
+    }
+
+    fn select_all(&mut self) {
+        self.selection = Some(Selection::all(self.page.layout()));
+    }
+
+    fn selected_text(&self) -> String {
+        self.selection
+            .as_ref()
+            .map_or_else(String::new, |selection| {
+                selection.text(self.page.layout()).to_owned()
+            })
+    }
+
+    fn highlights(&self, top: f32, bottom: f32) -> Vec<ffi::DrawRect> {
+        let Some(selection) = &self.selection else {
+            return Vec::new();
+        };
+        selection
+            .highlights(self.page.layout(), top, bottom, &mut QtMeasurer)
+            .iter()
+            .map(|highlight| ffi::DrawRect {
+                x: highlight.x,
+                y: highlight.y,
+                width: highlight.width,
+                height: highlight.height,
+            })
+            .collect()
+    }
+
     fn layout_width(&self) -> f32 {
         self.page.layout().width
     }
@@ -169,6 +239,7 @@ fn open_page(utf8: &str) -> Box<Page> {
     Box::new(Page {
         page: page::Page::open(utf8),
         items: Vec::new(),
+        selection: None,
     })
 }
 

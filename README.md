@@ -5,6 +5,18 @@ The current stage lays out local pages: blocks with margins, padding, borders an
 wrapped text with fonts, colors, alignment and decorations, and list markers. There are no
 images, floats, table grids, links or network yet, and table parts stack as blocks.
 
+## Selecting text
+
+Text can be selected with the mouse and copied with Ctrl+C or from the Edit menu; Ctrl+A selects
+everything, and on systems with a selection clipboard, selected text goes there at once. A double
+click takes a word and a triple click a block, and dragging from them extends by words or blocks.
+
+It is made to be exact, so that selecting up to the end of a block takes not one character more:
+past the end of a line means the end of that line, the empty space between blocks counts for the
+block the drag came from until the mouse reaches the next text, and a selection never ends on what
+separates blocks. Only the text itself gets highlighted. Blocks are separated by a line end when
+copied, and by an empty line when there is room between them. List markers are not copied.
+
 ## How it is split
 
 Everything that reads untrusted page content is Rust, in `core/`, with no unsafe code and no
@@ -36,8 +48,9 @@ build/ron-browser --screenshot out.png page.html
 build/ron-browser --encoding mazovia page.htm  # any encoding name cpg knows
 ```
 
-The tests need no Qt:
+The Rust tests need no Qt. The tests of the window run without a display:
 
 ```sh
 cargo test
+ctest --test-dir build --output-on-failure
 ```

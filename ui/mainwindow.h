@@ -16,6 +16,7 @@ public:
     void openPage(const QString &path);
     // For a screenshot, which must not wait for the delay after a resize.
     void layOutNow();
+    PageView *pageView() const;
 
 private:
     void chooseFile();

@@ -2,7 +2,11 @@
 
 #include "textmeasure.h"
 
+#include <QApplication>
+#include <QClipboard>
+#include <QMouseEvent>
 #include <QPaintEvent>
+#include <QStyleHints>
 #include <QPainter>
 #include <QResizeEvent>
 #include <QScrollBar>
@@ -27,8 +31,13 @@ struct PageView::PageHolder {
 };
 
 PageView::PageView(QWidget *parent)
-    : QAbstractScrollArea(parent), holder(std::make_unique<PageHolder>()), resizeTimer(new QTimer(this))
+    : QAbstractScrollArea(parent), holder(std::make_unique<PageHolder>()), resizeTimer(new QTimer(this)),
+      dragScrollTimer(new QTimer(this))
 {
+    dragScrollTimer->setInterval(50);
+    connect(dragScrollTimer, &QTimer::timeout, this, &PageView::scrollWhileDragging);
+    viewport()->setCursor(Qt::IBeamCursor);
+    setFocusPolicy(Qt::StrongFocus);
     // While the window is being resized, long pages are only laid out once it stops.
     resizeTimer->setSingleShot(true);
     resizeTimer->setInterval(50);
@@ -64,6 +73,131 @@ QString PageView::pageTitle() const
     }
     const rust::String title = (*holder->page)->title();
     return QString::fromUtf8(title.data(), static_cast<qsizetype>(title.size()));
+}
+
+QPointF PageView::pagePosition(QPointF viewPosition) const
+{
+    return viewPosition + QPointF(horizontalScrollBar()->value(), verticalScrollBar()->value());
+}
+
+void PageView::pressAt(QMouseEvent *event, int clicks)
+{
+    if (!holder->page || event->button() != Qt::LeftButton) {
+        return;
+    }
+    const QPointF at = pagePosition(event->position());
+    if (clicks == 1 && (event->modifiers() & Qt::ShiftModifier) != 0) {
+        (*holder->page)->extend(static_cast<float>(at.x()), static_cast<float>(at.y()));
+    } else {
+        (*holder->page)->press(static_cast<float>(at.x()), static_cast<float>(at.y()), clicks);
+    }
+    dragging = true;
+    lastDragPosition = event->position();
+    dragScrollTimer->start();
+    viewport()->update();
+}
+
+void PageView::mousePressEvent(QMouseEvent *event)
+{
+    const int distance = QApplication::startDragDistance();
+    const bool isThird = lastDoubleClick.isValid()
+        && lastDoubleClick.elapsed() < QApplication::styleHints()->mouseDoubleClickInterval()
+        && (event->position() - lastDoubleClickPosition).manhattanLength() < distance;
+    pressAt(event, isThird ? 3 : 1);
+}
+
+void PageView::mouseDoubleClickEvent(QMouseEvent *event)
+{
+    lastDoubleClick.start();
+    lastDoubleClickPosition = event->position();
+    pressAt(event, 2);
+}
+
+void PageView::dragTo(QPointF viewPosition)
+{
+    if (holder->page) {
+        const QPointF at = pagePosition(viewPosition);
+        (*holder->page)->drag(static_cast<float>(at.x()), static_cast<float>(at.y()));
+        viewport()->update();
+    }
+}
+
+void PageView::mouseMoveEvent(QMouseEvent *event)
+{
+    if (dragging) {
+        lastDragPosition = event->position();
+        dragTo(lastDragPosition);
+    }
+}
+
+// Moves the page while the mouse is held beyond its edges, so that selections can span it.
+void PageView::scrollWhileDragging()
+{
+    const QSize size = viewport()->size();
+    const qreal y = lastDragPosition.y();
+    const qreal x = lastDragPosition.x();
+    const int verticalStep = y < 0 ? static_cast<int>(y) : (y > size.height() ? static_cast<int>(y - size.height()) : 0);
+    const int horizontalStep = x < 0 ? static_cast<int>(x) : (x > size.width() ? static_cast<int>(x - size.width()) : 0);
+    if (verticalStep != 0 || horizontalStep != 0) {
+        verticalScrollBar()->setValue(verticalScrollBar()->value() + verticalStep);
+        horizontalScrollBar()->setValue(horizontalScrollBar()->value() + horizontalStep);
+        dragTo(lastDragPosition);
+    }
+}
+
+void PageView::mouseReleaseEvent(QMouseEvent *event)
+{
+    if (event->button() == Qt::LeftButton && dragging) {
+        dragging = false;
+        dragScrollTimer->stop();
+        offerSelection();
+    }
+}
+
+// On systems that have one, the selection clipboard gets what is selected at once.
+void PageView::offerSelection()
+{
+    QClipboard *clipboard = QGuiApplication::clipboard();
+    if (holder->page && clipboard->supportsSelection()) {
+        const rust::String text = (*holder->page)->selected_text();
+        if (!text.empty()) {
+            clipboard->setText(QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size())),
+                               QClipboard::Selection);
+        }
+    }
+}
+
+void PageView::copySelection()
+{
+    if (holder->page) {
+        const rust::String text = (*holder->page)->selected_text();
+        if (!text.empty()) {
+            QGuiApplication::clipboard()->setText(
+                QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size())));
+        }
+    }
+}
+
+void PageView::selectAll()
+{
+    if (holder->page) {
+        (*holder->page)->select_all();
+        offerSelection();
+        viewport()->update();
+    }
+}
+
+QString PageView::selectForTest(QPointF from, QPointF to, int clicks)
+{
+    if (!holder->page) {
+        return {};
+    }
+    auto &page = *holder->page;
+    page->press(static_cast<float>(from.x()), static_cast<float>(from.y()), clicks);
+    page->drag(static_cast<float>(to.x()), static_cast<float>(to.y()));
+    viewport()->update();
+    const rust::String text = page->selected_text();
+    return QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size()));
 }
 
 void PageView::layOutNow()
@@ -162,5 +296,12 @@ void PageView::paintEvent(QPaintEvent *event)
                 drawLine(-metrics.strikeOutPos());
             }
         }
+    }
+    // Over the text and translucent, so that it works on any background and text color.
+    const auto highlights = page->highlights(static_cast<float>(visible.top()), static_cast<float>(visible.bottom()));
+    QColor highlight = palette().color(QPalette::Highlight);
+    highlight.setAlpha(110);
+    for (const auto &rect : highlights) {
+        painter.fillRect(QRectF(rect.x, rect.y, rect.width, rect.height), highlight);
     }
 }
