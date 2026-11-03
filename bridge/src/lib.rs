@@ -41,6 +41,13 @@ mod ffi {
         decoration: u8,
     }
 
+    /// Text decoded from a page.
+    struct DecodedText {
+        utf8: String,
+        /// Whether something invalid had to be replaced.
+        replaced: bool,
+    }
+
     /// A rectangle to highlight.
     #[derive(Clone, Copy)]
     struct DrawRect {
@@ -85,8 +92,9 @@ mod ffi {
         /// The charset a page declares in its first bytes, or an empty string.
         fn declared_charset(bytes: &[u8]) -> String;
         fn is_utf8(bytes: &[u8]) -> bool;
+        fn is_known_encoding(encoding: &str) -> bool;
         /// The bytes as UTF-8, with what is invalid replaced.
-        fn lossy_utf8(bytes: &[u8]) -> String;
+        fn decode_bytes(bytes: &[u8], encoding: &str) -> DecodedText;
     }
 
     unsafe extern "C++" {
@@ -315,6 +323,14 @@ fn is_utf8(bytes: &[u8]) -> bool {
     std::str::from_utf8(bytes).is_ok()
 }
 
-fn lossy_utf8(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).into_owned()
+fn is_known_encoding(encoding: &str) -> bool {
+    charset::is_known(encoding)
+}
+
+fn decode_bytes(bytes: &[u8], encoding: &str) -> ffi::DecodedText {
+    let decoded = charset::decode(bytes, encoding);
+    ffi::DecodedText {
+        utf8: decoded.utf8,
+        replaced: decoded.replaced,
+    }
 }

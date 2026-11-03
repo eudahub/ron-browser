@@ -1,7 +1,31 @@
-//! Finds the charset a page declares, before it can be decoded.
+//! Finds the charset a page declares, and decodes it.
+
+pub use cpg::LossyText;
 
 /// How far into a page a declaration counts, as in the HTML standard.
 const DECLARATION_BYTES: usize = 1024;
+
+/// Whether an encoding of this name is known.
+#[must_use]
+pub fn is_known(encoding: &str) -> bool {
+    cpg::by_name(encoding).is_some()
+}
+
+/// Decodes a page, replacing what is invalid: a page with a few bad bytes is still worth showing.
+/// An unknown encoding counts as UTF-8.
+#[must_use]
+pub fn decode(bytes: &[u8], encoding: &str) -> LossyText {
+    match cpg::by_name(encoding) {
+        Some(codepage) => codepage.to_utf8_lossy(bytes),
+        None => {
+            let utf8 = String::from_utf8_lossy(bytes);
+            LossyText {
+                replaced: std::str::from_utf8(bytes).is_err(),
+                utf8: utf8.into_owned(),
+            }
+        }
+    }
+}
 
 /// Finds `charset=...` in the first bytes of a page, as in
 /// `<meta charset="utf-8">` or `<meta http-equiv=content-type content="...; charset=utf-8">`.

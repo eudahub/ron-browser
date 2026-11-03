@@ -29,8 +29,10 @@ Images are decoded in Rust too: PNG, JPEG, GIF (its first frame), WebP and BMP, 
 their size that apply before anything is allocated. A local page can only load images from its own
 directory and below it: no other scheme, and no way out by `..`, an absolute path or a symbolic link.
 
-The exception for now is decoding: [cpg](https://github.com/eudahub/cpg), in C++, turns legacy
-encodings into UTF-8. It will move to Rust before the browser reads from a network.
+Legacy encodings are turned into UTF-8 by [cpg-rs](https://github.com/eudahub/cpg-rs). The exception
+for now is detecting the encoding of a page that does not declare one: that is still
+[cpg](https://github.com/eudahub/cpg), in C++. It will move to Rust before the browser reads from a
+network.
 
 ## Encodings
 
@@ -42,7 +44,8 @@ uncertain. Bytes invalid in that encoding are replaced.
 ## Building
 
 Needs a C++20 compiler, CMake, Cargo, Qt 6 with Widgets, and an installed cpg with ICU and zlib.
-The [ron](https://github.com/eudahub/ron) repository must be checked out next to this one.
+The repositories [ron](https://github.com/eudahub/ron) and [cpg-rs](https://github.com/eudahub/cpg-rs)
+must be checked out next to this one.
 
 ```sh
 cmake -S . -B build
