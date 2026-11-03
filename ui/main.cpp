@@ -4,6 +4,7 @@
 #include <QApplication>
 #include <QCoreApplication>
 #include <QFileInfo>
+#include <QIcon>
 #include <QLineF>
 #include <QPixmap>
 #include <QSize>
@@ -118,6 +119,10 @@ int main(int argc, char *argv[])
     }
 
     QApplication application(argc, argv);
+    // The installed ron-browser.desktop; on Wayland it ties the window to its icon.
+    QApplication::setDesktopFileName(QStringLiteral("ron-browser"));
+    QApplication::setWindowIcon(QIcon::fromTheme(QStringLiteral("ron-browser"),
+                                                 QIcon(QStringLiteral(":/ron-browser.svg"))));
     if (!pageShot.isEmpty()) {
         return shootPage(path, encoding, pageShot, pageShotSize);
     }

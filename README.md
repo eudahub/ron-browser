@@ -53,6 +53,23 @@ build/ron-browser --screenshot out.png page.html
 build/ron-browser --encoding mazovia page.htm  # any encoding name cpg knows
 ```
 
+## Installing
+
+```sh
+sudo cmake --install build                  # to /usr/local
+cmake --install build --prefix ~/.local     # for the current user only
+```
+
+This installs `ron-browser` to `bin`, `share/applications/ron-browser.desktop` and the icon
+`share/icons/hicolor/scalable/apps/ron-browser.svg`, and refreshes the caches of the desktop, so the
+browser appears in its menu and side bar at once. `--strip` makes the program smaller. Showing the
+icon needs the SVG plugin of Qt (`qt6-svg-plugins`), and detecting encodings the data of the installed
+cpg. Remove the files listed in `build/install_manifest.txt` to uninstall.
+
+Install again after every build you want to use from the menu: the installed files are copies.
+
+## Comparing with Firefox
+
 `tools/compare_with_firefox.py` shows pages in Firefox and in ron-browser, lists the rows that
 differ and leaves shots of both. It needs Firefox and Pillow, and uses its own empty Firefox profile.
 

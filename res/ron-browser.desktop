@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=ron-browser
+GenericName=Web Browser
+Comment=Show web pages, with memory use and security first
+Exec=ron-browser %f
+Icon=ron-browser
+Terminal=false
+Categories=Qt;Network;WebBrowser;
+MimeType=text/html;application/xhtml+xml;
+Keywords=web;browser;html;
+StartupWMClass=ron-browser

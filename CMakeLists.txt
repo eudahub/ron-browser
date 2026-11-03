@@ -53,6 +53,37 @@ target_compile_definitions(ron-browser PRIVATE
     CPG_LANGUAGES_FILE="${CPG_LANGUAGES_FILE}"
     CPG_MODELS_DIR="${CPG_MODELS_DIR}")
 target_link_libraries(ron-browser PRIVATE core Qt6::Widgets cpg::cpg ${CMAKE_DL_LIBS})
+# The window icon, also when the icon is not installed (:/ron-browser.svg).
+qt_add_resources(ron-browser icons
+    PREFIX "/"
+    BASE "${CMAKE_SOURCE_DIR}/res"
+    FILES "${CMAKE_SOURCE_DIR}/res/ron-browser.svg")
+
+# Installation: cmake --install build [--prefix DIR], by default to /usr/local.
+include(GNUInstallDirs)
+install(TARGETS ron-browser RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(FILES res/ron-browser.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+install(FILES res/ron-browser.svg
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
+# Refresh the icon and desktop file caches, so that a running desktop (e.g. GNOME on Wayland,
+# whose shell cannot be restarted without logging out) shows the icon at once. Skipped for
+# packaging (DESTDIR) and when the tools are missing.
+install(CODE "
+    if(\"\$ENV{DESTDIR}\" STREQUAL \"\")
+        set(data \"\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_DATADIR}\")
+        find_program(gtk_update_icon_cache gtk-update-icon-cache)
+        find_program(update_desktop_database update-desktop-database)
+        if(gtk_update_icon_cache)
+            message(STATUS \"Updating the icon cache of \${data}/icons/hicolor\")
+            execute_process(COMMAND \"\${gtk_update_icon_cache}\" -f -t
+                            \"\${data}/icons/hicolor\" OUTPUT_QUIET ERROR_QUIET)
+        endif()
+        if(update_desktop_database)
+            execute_process(COMMAND \"\${update_desktop_database}\"
+                            \"\${data}/applications\" OUTPUT_QUIET ERROR_QUIET)
+        endif()
+    endif()
+")
 
 # Runs without a display: ctest --test-dir build --output-on-failure
 option(BUILD_TESTING "Build the tests of the window" ON)
