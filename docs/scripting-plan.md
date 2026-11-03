@@ -47,9 +47,14 @@ Time for the same work, on one thread (details in `bench/hash`):
   fast. It comes first, and is simpler than JavaScript.
 - An engine within a sandbox is 40 to 55 times slower than Chrome on this work, the hardest there is
   for it. An `onclick` does not notice, while Argon2 written in JavaScript would.
-- JavaScript is not turned into WebAssembly. The engine is, once, when the browser is built, and a
-  script is only data for it. Real conversion gains little without knowing the types, which are only
-  known while running, and LLVM is far too large and slow to use while a page runs.
+- JavaScript is not turned into WebAssembly at first. The engine is, once, when the browser is built,
+  and a script is only data for it. Conversion gains little without knowing the types, which are only
+  known while running, and LLVM is far too large and slow to use while a page runs. Stage 5 comes back
+  to this, for functions where the types can be known.
+- WebAssembly does not run by itself. It only reckons on its own memory and calls what it is given, while
+  JavaScript loads and calls it: a forum can offer Argon2 as a WebAssembly file, with a little script
+  around it. So WebAssembly needs an engine too, but one that is correct rather than fast, as the heavy
+  work is elsewhere.
 
 ## Stages
 
