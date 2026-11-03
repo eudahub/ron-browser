@@ -30,6 +30,9 @@ public:
     // Images load from `directory`, the one the page is in, and from nowhere else.
     void setPage(const std::string &utf8, const QString &directory = QString());
     void clearPage();
+    // Starts reading the images of a page that came from this address. They show as they arrive.
+    void fetchImages(const QString &pageAddress);
+    bool isLoadingImages() const;
     QString pageTitle() const;
     bool hasPage() const;
     int scrollY() const;
@@ -64,6 +67,8 @@ protected:
     void leaveEvent(QEvent *event) override;
 
 private:
+    void takeImages();
+    void forgetPage();
     QString linkAt(QPointF viewPosition) const;
     void setHoveredLink(const QString &address);
     void layOut();
@@ -84,6 +89,7 @@ private:
     QElapsedTimer lastDoubleClick;
     QPointF lastDoubleClickPosition;
     QTimer *dragScrollTimer;
+    QTimer *imageTimer;
     QString hoveredLink;
     // Where the left button went down on a link, for telling a click from a drag.
     QString pressedLink;

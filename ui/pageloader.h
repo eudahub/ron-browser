@@ -4,6 +4,7 @@
 #include <QString>
 
 #include <string>
+#include <string_view>
 
 // Reads a page's bytes from a file and turns them into UTF-8. The engine only takes UTF-8,
 // so this is where legacy encodings end.
@@ -17,5 +18,7 @@ struct DecodedPage {
 
 // `forcedEncoding` is a cpg-rs codepage name chosen by the user, or empty.
 DecodedPage loadPage(const QString &path, const std::string &forcedEncoding);
+// For bytes from the network. `charset` is what the server says, or empty.
+DecodedPage decodeFetchedPage(std::string_view bytes, const std::string &charset);
 
 #endif

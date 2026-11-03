@@ -8,7 +8,7 @@ use ron_browser_core::layout::{self, ItemKind, TextMeasurer};
 use ron_browser_core::links::{self, Target};
 use ron_browser_core::selection::{Selection, Unit};
 use ron_browser_core::{Color, charset};
-use ron_browser_core::{history, page};
+use ron_browser_core::{history, net, page};
 
 #[allow(unsafe_code)]
 #[cxx::bridge(namespace = "ron_browser")]
@@ -63,6 +63,19 @@ mod ffi {
         Missing,
         Unsupported,
         Refused,
+    }
+
+    /// What has come of reading a page from the network.
+    struct FetchedPage {
+        /// False while it is still being read; the rest is empty until then.
+        done: bool,
+        /// What went wrong, or empty.
+        error: String,
+        /// Where it really came from, after any redirects.
+        address: String,
+        bytes: Vec<u8>,
+        mime: String,
+        charset: String,
     }
 
     /// Where a link or a typed address leads.
@@ -126,6 +139,21 @@ mod ffi {
         fn file_address(path: &str) -> String;
         /// The local file at an address, or an empty string if it is not one.
         fn local_path(address: &str) -> String;
+
+        type PageFetch;
+
+        /// Starts reading a page on a thread of its own. `asking_page` is the address of the page
+        /// whose link it is, or empty when the user asks for it directly.
+        fn start_page_fetch(address: &str, asking_page: &str) -> Box<PageFetch>;
+        fn poll(self: &mut PageFetch) -> FetchedPage;
+
+        type ImageFetch;
+
+        /// Starts reading the images of a page that came from this address.
+        fn start_image_fetch(self: &Page, page_address: &str) -> Box<ImageFetch>;
+        /// Takes the images that have arrived, and tells whether there are any.
+        fn take_images(self: &mut Page, fetch: &mut ImageFetch) -> bool;
+        fn is_done(self: &mut ImageFetch) -> bool;
 
         type History;
 
@@ -310,6 +338,20 @@ impl Page {
             .collect()
     }
 
+    fn start_image_fetch(&self, page_address: &str) -> Box<ImageFetch> {
+        let requests = net::image_requests(page_address, &self.page.image_sources());
+        Box::new(ImageFetch(net::ImageFetch::start(page_address, requests)))
+    }
+
+    fn take_images(&mut self, fetch: &mut ImageFetch) -> bool {
+        let images = fetch.0.poll();
+        let any = !images.is_empty();
+        for (written, image) in images {
+            self.page.add_image(&written, image);
+        }
+        any
+    }
+
     fn link_at(&self, x: f32, y: f32) -> &str {
         self.page.layout().link_at(x, y).unwrap_or("")
     }
@@ -364,6 +406,51 @@ impl Page {
             .images()
             .get(image)
             .map_or(&[], |image| &image.rgba)
+    }
+}
+
+/// A page being read, in a type of this crate as the bridge requires.
+pub struct PageFetch(net::PageFetch);
+
+fn start_page_fetch(address: &str, asking_page: &str) -> Box<PageFetch> {
+    let asking_page = (!asking_page.is_empty()).then_some(asking_page);
+    Box::new(PageFetch(net::PageFetch::start(address, asking_page)))
+}
+
+impl PageFetch {
+    fn poll(&mut self) -> ffi::FetchedPage {
+        let mut result = ffi::FetchedPage {
+            done: false,
+            error: String::new(),
+            address: String::new(),
+            bytes: Vec::new(),
+            mime: String::new(),
+            charset: String::new(),
+        };
+        match self.0.poll() {
+            None => {}
+            Some(Ok(fetched)) => {
+                result.done = true;
+                result.address = fetched.address;
+                result.bytes = fetched.bytes;
+                result.mime = fetched.mime;
+                result.charset = fetched.charset;
+            }
+            Some(Err(error)) => {
+                result.done = true;
+                result.error = error.to_string();
+            }
+        }
+        result
+    }
+}
+
+/// The images of a page being read, in a type of this crate as the bridge requires.
+pub struct ImageFetch(net::ImageFetch);
+
+impl ImageFetch {
+    fn is_done(&mut self) -> bool {
+        self.0.is_done()
     }
 }
 

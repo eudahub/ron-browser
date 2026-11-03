@@ -1,22 +1,38 @@
 # ron-browser
 Web browser built on the [ron](https://github.com/eudahub/ron) engine, with a window in Qt.
 
-The current stage lays out local pages: blocks with margins, padding, borders and backgrounds,
-wrapped text with fonts, colors, alignment and decorations, list markers, images, background
-images and floats. Text aims to land where it does in Firefox. Links work between local pages.
-There are no table grids or network yet, and table parts stack as blocks.
+The current stage shows pages from files and from the web: blocks with margins, padding, borders and
+backgrounds, wrapped text with fonts, colors, alignment and decorations, list markers, images,
+background images, floats and image maps. Text aims to land where it does in Firefox. Style sheets in
+separate files are not read yet, so most pages on the web show without their design. There are no
+table grids yet, and table parts stack as blocks.
 
 ## Links and history
 
-A click on a link goes there, and a drag that starts on one selects text as usual. The status bar
-shows where the link under the mouse leads. Back, Forward (also Alt+Left, Alt+Right and the mouse's
-own buttons) and Reload are in the toolbar, and Back returns to how far down the page was.
+A click on a link or a part of an image map goes there, and a drag that starts on one selects text
+as usual. The status bar shows where the link under the mouse leads. Back, Forward (also Alt+Left,
+Alt+Right and the mouse's own buttons), Reload and Stop are in the toolbar, and Back returns to how
+far down the page was. The address line takes an address or a path to a file (Ctrl+L); with no scheme
+it means HTTPS.
 
 Only what the user does adds to the history or moves in it, so that a page can never hold the user
-back. Links open local pages, with `.htm`, `.html`, `.shtml` or `.xhtml` in their names, and the index
-page of a directory, wherever they are on the disk. Other files are only named in the status bar, as is
-anything on a network, as there is no network yet. Schemes like `javascript:` and `data:` are not
-followed at all. `<base>` is ignored for now.
+back. A redirect takes one place in it, so Back goes to before it. Links open pages on the web, and
+local pages with `.htm`, `.html`, `.shtml` or `.xhtml` in their names, or the index page of a
+directory. Other files are only named in the status bar, and schemes like `javascript:` and `data:` are
+not followed at all. `<base>` is ignored for now.
+
+## The network
+
+Pages and images are read on threads of their own, so the window goes on, and images show as they
+arrive. HTTPS goes through [rustls](https://github.com/rustls/rustls), with the root certificates
+built in, and a page with a bad certificate does not open: there is no way past it yet. Pages over
+plain HTTP do open, and the status bar says they are not secure.
+
+Requests carry no cookies, no `Referer` and no language. A page on the network cannot link to local
+files, or make the browser reach addresses inside the user's own network, also through a name that
+leads there. A redirect cannot go from HTTPS to HTTP, and a page over HTTPS loads no images over HTTP.
+A page may be up to 64 MB and an image 32 MB, counted after unpacking, and a request 60 seconds. Forms
+are not sent yet, and pages in encodings that cpg-rs lacks, like Shift-JIS, come out wrong.
 
 ## Selecting text
 

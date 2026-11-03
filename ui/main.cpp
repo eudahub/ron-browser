@@ -3,6 +3,8 @@
 
 #include <QApplication>
 #include <QCoreApplication>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFileInfo>
 #include <QIcon>
 #include <QLineF>
@@ -20,10 +22,13 @@
 
 namespace {
 
+// How long a screenshot waits for a page and its images to arrive.
+const int maxScreenshotWaitMs = 60000;
+
 const char usage[] =
-    "usage: ron-browser [--encoding NAME] [FILE]\n"
+    "usage: ron-browser [--encoding NAME] [FILE or ADDRESS]\n"
     "       ron-browser [--encoding NAME] --print FILE\n"
-    "       ron-browser [--encoding NAME] --screenshot PNG [--select X1 Y1 X2 Y2] FILE\n"
+    "       ron-browser [--encoding NAME] --screenshot PNG [--select X1 Y1 X2 Y2] [FILE or ADDRESS]\n"
     "       ron-browser [--encoding NAME] --page-shot PNG [--size WIDTHxHEIGHT] FILE\n"
     "       ron-browser [--encoding NAME] --decode FILE\n";
 
@@ -132,6 +137,11 @@ int main(int argc, char *argv[])
         window.openPage(path);
     }
     if (!screenshot.isEmpty()) {
+        QElapsedTimer waited;
+        waited.start();
+        while (window.isLoading() && waited.elapsed() < maxScreenshotWaitMs) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+        }
         window.layOutNow();
         if (selection) {
             // Shows and prints what a drag between these points of the page gives.

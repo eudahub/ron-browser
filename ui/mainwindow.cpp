@@ -11,6 +11,7 @@
 #include <QMenuBar>
 #include <QStatusBar>
 #include <QStyle>
+#include <QTimer>
 #include <QToolBar>
 #include <QUrl>
 
@@ -45,7 +46,7 @@ QString asQString(const rust::String &text)
 
 MainWindow::MainWindow(std::string forcedEncoding)
     : view(new PageView(this)), forcedEncoding(std::move(forcedEncoding)), history(ron_browser::new_history()),
-      addressBar(new QLineEdit(this))
+      addressBar(new QLineEdit(this)), fetchTimer(new QTimer(this))
 {
     setCentralWidget(view);
     statusBar();
@@ -65,6 +66,8 @@ MainWindow::MainWindow(std::string forcedEncoding)
                                       QKeySequence::Forward, this, &MainWindow::goForward);
     reloadAction = goMenu->addAction(style()->standardIcon(QStyle::SP_BrowserReload), tr("&Reload"),
                                      QKeySequence::Refresh, this, &MainWindow::reload);
+    stopAction = goMenu->addAction(style()->standardIcon(QStyle::SP_BrowserStop), tr("&Stop"),
+                                   QKeySequence(Qt::Key_Escape), this, &MainWindow::stopFetch);
     goMenu->addAction(tr("Go to &Address"), QKeySequence(Qt::CTRL | Qt::Key_L), this, [this] {
         addressBar->setFocus();
         addressBar->selectAll();
@@ -74,8 +77,12 @@ MainWindow::MainWindow(std::string forcedEncoding)
     toolBar->addAction(backAction);
     toolBar->addAction(forwardAction);
     toolBar->addAction(reloadAction);
+    toolBar->addAction(stopAction);
     addressBar->setPlaceholderText(tr("Address or file"));
     toolBar->addWidget(addressBar);
+
+    fetchTimer->setInterval(30);
+    connect(fetchTimer, &QTimer::timeout, this, &MainWindow::checkFetch);
 
     connect(addressBar, &QLineEdit::returnPressed, this, &MainWindow::goToTyped);
     connect(view, &PageView::linkActivated, this, &MainWindow::followLink);
@@ -106,25 +113,19 @@ void MainWindow::chooseFile()
     }
 }
 
-void MainWindow::openPage(const QString &path)
-{
-    const QByteArray bytes = path.toUtf8();
-    const QString address = asQString(ron_browser::file_address(asStr(bytes)));
-    if (address.isEmpty()) {
-        statusBar()->showMessage(tr("Cannot open %1").arg(path));
-        return;
-    }
-    goTo(address, QString());
-}
-
-bool MainWindow::loadAddress(const QString &address)
+void MainWindow::openPage(const QString &address)
 {
     const QByteArray bytes = address.toUtf8();
-    const QString path = asQString(ron_browser::local_path(asStr(bytes)));
-    if (path.isEmpty()) {
-        statusBar()->showMessage(tr("This browser has no network yet: %1").arg(shownAddress(address)));
-        return false;
-    }
+    followTarget(ron_browser::resolve_address(asStr(bytes)), QString());
+}
+
+bool MainWindow::isLoading() const
+{
+    return pageFetch.has_value() || view->isLoadingImages();
+}
+
+bool MainWindow::loadLocalFile(const QString &address, const QString &path)
+{
     const DecodedPage decoded = loadPage(path, forcedEncoding);
     if (!decoded.error.isEmpty()) {
         statusBar()->showMessage(tr("Cannot open %1: %2").arg(path, decoded.error));
@@ -139,21 +140,105 @@ bool MainWindow::loadAddress(const QString &address)
     return true;
 }
 
-void MainWindow::goTo(const QString &address, const QString &fragment)
+void MainWindow::goTo(const QString &address, const QString &fragment, const QString &askingPage)
 {
     history->save_scroll(view->scrollY());
-    if (address != loadedAddress && !loadAddress(address)) {
+    stopFetch();
+    const QByteArray bytes = address.toUtf8();
+    const QString path = asQString(ron_browser::local_path(asStr(bytes)));
+    if (address != loadedAddress) {
+        if (path.isEmpty()) {
+            fetchFragment = fragment;
+            fetchScroll.reset();
+            startFetch(address, askingPage);
+            return;
+        }
+        if (!loadLocalFile(address, path)) {
+            return;
+        }
+    }
+    const QByteArray fragmentBytes = fragment.toUtf8();
+    history->visit(asStr(bytes), asStr(fragmentBytes));
+    view->scrollToFragment(fragment);
+    updateNavigation();
+}
+
+void MainWindow::startFetch(const QString &address, const QString &askingPage)
+{
+    const QByteArray addressBytes = address.toUtf8();
+    const QByteArray pageBytes = askingPage.toUtf8();
+    pageFetch = ron_browser::start_page_fetch(asStr(addressBytes), asStr(pageBytes));
+    fetchTimer->start();
+    pageStatus = tr("Loading %1").arg(shownAddress(address));
+    statusBar()->showMessage(pageStatus);
+    updateNavigation();
+}
+
+void MainWindow::stopFetch()
+{
+    if (pageFetch) {
+        fetchTimer->stop();
+        pageFetch.reset();
+        pageStatus.clear();
+        statusBar()->clearMessage();
+        updateNavigation();
+    }
+}
+
+void MainWindow::checkFetch()
+{
+    if (!pageFetch) {
+        fetchTimer->stop();
         return;
     }
-    const QByteArray addressBytes = address.toUtf8();
-    const QByteArray fragmentBytes = fragment.toUtf8();
-    history->visit(asStr(addressBytes), asStr(fragmentBytes));
-    view->scrollToFragment(fragment);
+    const ron_browser::FetchedPage fetched = (*pageFetch)->poll();
+    if (!fetched.done) {
+        return;
+    }
+    fetchTimer->stop();
+    pageFetch.reset();
+    pageStatus.clear();
+    if (!fetched.error.empty()) {
+        statusBar()->showMessage(tr("Cannot open it: %1").arg(shownAddress(asQString(fetched.error))));
+        updateNavigation();
+        return;
+    }
+    const QString mime = asQString(fetched.mime);
+    const QString address = asQString(fetched.address);
+    if (!mime.isEmpty() && mime != QStringLiteral("text/html") && mime != QStringLiteral("application/xhtml+xml")) {
+        statusBar()->showMessage(tr("Not a web page, but %1: %2").arg(mime.left(100), shownAddress(address)));
+        updateNavigation();
+        return;
+    }
+    const std::string_view bytes(reinterpret_cast<const char *>(fetched.bytes.data()), fetched.bytes.size());
+    const DecodedPage decoded = decodeFetchedPage(bytes, std::string(fetched.charset));
+    view->setPage(decoded.utf8);
+    loadedAddress = address;
+    const QString title = view->pageTitle();
+    setWindowTitle(title.isEmpty() ? QUrl(address).host() : title);
+    const QString security = QUrl(address).scheme() == QStringLiteral("https") ? QString() : tr("Not secure. ");
+    pageStatus = security + tr("Encoding: %1 (%2)").arg(QString::fromStdString(decoded.encoding), decoded.encodingSource);
+    statusBar()->showMessage(pageStatus);
+    if (fetchScroll) {
+        view->setScrollY(*fetchScroll);
+    } else {
+        // Where a redirect ended up is the one place added, so that Back goes to before it.
+        const QByteArray addressBytes = address.toUtf8();
+        const QByteArray fragmentBytes = fetchFragment.toUtf8();
+        history->visit(asStr(addressBytes), asStr(fragmentBytes));
+        view->scrollToFragment(fetchFragment);
+    }
+    view->fetchImages(address);
     updateNavigation();
 }
 
 void MainWindow::goBack()
 {
+    if (pageFetch) {
+        // What was being read never counted as a place, so Back only drops it.
+        stopFetch();
+        return;
+    }
     history->save_scroll(view->scrollY());
     if (history->go_back()) {
         showCurrentEntry();
@@ -162,6 +247,7 @@ void MainWindow::goBack()
 
 void MainWindow::goForward()
 {
+    stopFetch();
     history->save_scroll(view->scrollY());
     if (history->go_forward()) {
         showCurrentEntry();
@@ -171,36 +257,51 @@ void MainWindow::goForward()
 void MainWindow::showCurrentEntry()
 {
     const QString address = asQString(history->current_address());
-    if (address == loadedAddress || loadAddress(address)) {
-        view->setScrollY(history->current_scroll());
+    const QByteArray bytes = address.toUtf8();
+    const QString path = asQString(ron_browser::local_path(asStr(bytes)));
+    const int scroll = history->current_scroll();
+    if (address != loadedAddress && path.isEmpty()) {
+        fetchScroll = scroll;
+        startFetch(address, QString());
+        return;
+    }
+    if (address == loadedAddress || loadLocalFile(address, path)) {
+        view->setScrollY(scroll);
     }
     updateNavigation();
 }
 
 void MainWindow::reload()
 {
-    if (!loadedAddress.isEmpty()) {
-        const int scroll = view->scrollY();
-        if (loadAddress(loadedAddress)) {
-            view->setScrollY(scroll);
-        }
+    if (loadedAddress.isEmpty()) {
+        return;
+    }
+    stopFetch();
+    const int scroll = view->scrollY();
+    const QByteArray bytes = loadedAddress.toUtf8();
+    const QString path = asQString(ron_browser::local_path(asStr(bytes)));
+    if (path.isEmpty()) {
+        fetchScroll = scroll;
+        startFetch(loadedAddress, QString());
+    } else if (loadLocalFile(loadedAddress, path)) {
+        view->setScrollY(scroll);
     }
 }
 
 void MainWindow::goToTyped()
 {
     const QByteArray typed = addressBar->text().toUtf8();
-    followTarget(ron_browser::resolve_address(asStr(typed)));
+    followTarget(ron_browser::resolve_address(asStr(typed)), QString());
 }
 
 void MainWindow::followLink(const QString &address)
 {
     const QByteArray page = loadedAddress.toUtf8();
     const QByteArray href = address.toUtf8();
-    followTarget(ron_browser::resolve_link(asStr(page), asStr(href)));
+    followTarget(ron_browser::resolve_link(asStr(page), asStr(href)), loadedAddress);
 }
 
-void MainWindow::followTarget(const ron_browser::LinkTarget &target)
+void MainWindow::followTarget(const ron_browser::LinkTarget &target, const QString &askingPage)
 {
     const QString place = shownAddress(asQString(target.place));
     switch (target.kind) {
@@ -208,7 +309,7 @@ void MainWindow::followTarget(const ron_browser::LinkTarget &target)
         goTo(loadedAddress, asQString(target.fragment));
         break;
     case ron_browser::LinkKind::Page:
-        goTo(asQString(target.place), asQString(target.fragment));
+        goTo(asQString(target.place), asQString(target.fragment), askingPage);
         break;
     case ron_browser::LinkKind::NotAPage:
         statusBar()->showMessage(tr("Not a web page: %1").arg(place));
@@ -235,6 +336,13 @@ void MainWindow::updateNavigation()
     backAction->setEnabled(history->can_go_back());
     forwardAction->setEnabled(history->can_go_forward());
     reloadAction->setEnabled(!loadedAddress.isEmpty());
-    const QString fragment = asQString(history->current_fragment());
-    addressBar->setText(fragment.isEmpty() ? loadedAddress : loadedAddress + u'#' + fragment);
+    stopAction->setEnabled(pageFetch.has_value());
+    // While something is being read, or after that failed, what the user typed stays to be fixed.
+    if (!pageFetch && pageStatus.isEmpty()) {
+        return;
+    }
+    if (!pageFetch) {
+        const QString fragment = asQString(history->current_fragment());
+        addressBar->setText(fragment.isEmpty() ? loadedAddress : loadedAddress + u'#' + fragment);
+    }
 }

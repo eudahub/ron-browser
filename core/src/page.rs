@@ -1,9 +1,11 @@
 //! An opened page: its tree, styles and layout.
 
+use std::collections::HashSet;
+
 use ron::css::{Styles, Viewport, compute_styles, document_stylesheets};
 use ron::html::{Document, NodeId, NodeKind, Tag, parse};
 
-use crate::images::{ImageStore, NoResources, ResourceLoader};
+use crate::images::{DecodedImage, ImageStore, NoResources, ResourceLoader};
 use crate::layout::{FontSpec, Layout, TextMeasurer, layout};
 
 pub struct Page {
@@ -74,6 +76,40 @@ impl Page {
                 self.images.load(url, loader);
             }
         }
+    }
+
+    /// What the page names as its images and backgrounds, each once, for reading them elsewhere.
+    #[must_use]
+    pub fn image_sources(&self) -> Vec<String> {
+        let document = &self.document;
+        let mut seen = HashSet::new();
+        let mut sources = Vec::new();
+        for id in document.descendants(document.root()) {
+            if document.kind(id) != NodeKind::Element {
+                continue;
+            }
+            if document.tag(id) == Tag::Img
+                && let Some(source) = document
+                    .attributes(id)
+                    .find(|attribute| attribute.name.eq_ignore_ascii_case("src"))
+            {
+                let written = source.decoded_value().into_owned();
+                if seen.insert(written.clone()) {
+                    sources.push(written);
+                }
+            }
+            if let Some(url) = &self.styles.get(id).background_image
+                && seen.insert(url.to_string())
+            {
+                sources.push(url.to_string());
+            }
+        }
+        sources
+    }
+
+    /// Adds an image read from elsewhere. It takes a new layout to show.
+    pub fn add_image(&mut self, written: &str, image: DecodedImage) {
+        self.images.insert(written, image);
     }
 
     /// Lays the page out for a view of this size.

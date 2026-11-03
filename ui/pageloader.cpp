@@ -8,7 +8,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <string_view>
 
 namespace {
 
@@ -48,23 +47,10 @@ void decode(DecodedPage &page, std::string_view bytes, const std::string &encodi
     page.utf8 = std::string(decoded.utf8);
 }
 
-} // namespace
-
-DecodedPage loadPage(const QString &path, const std::string &forcedEncoding)
+void decodeContent(DecodedPage &page, std::string_view bytes, const std::string &forcedEncoding,
+                   const std::string &serverCharset)
 {
-    DecodedPage page;
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        page.error = file.errorString();
-        return page;
-    }
-    if (file.size() > maxPageBytes) {
-        page.error = QObject::tr("The file is too large to open.");
-        return page;
-    }
-    const QByteArray content = file.readAll();
-    std::string_view bytes(content.constData(), static_cast<size_t>(content.size()));
-
+    const std::string fromServer = codepageForLabel(serverCharset);
     if (!forcedEncoding.empty() && !ron_browser::is_known_encoding(forcedEncoding)) {
         page.error = QObject::tr("Unknown encoding: %1").arg(QString::fromStdString(forcedEncoding));
     } else if (!forcedEncoding.empty()) {
@@ -73,6 +59,9 @@ DecodedPage loadPage(const QString &path, const std::string &forcedEncoding)
     } else if (bytes.starts_with("\xEF\xBB\xBF")) {
         page.encodingSource = QObject::tr("byte order mark");
         decode(page, bytes.substr(3), "utf8");
+    } else if (!fromServer.empty()) {
+        page.encodingSource = QObject::tr("from the server");
+        decode(page, bytes, fromServer);
     } else {
         const std::string declared = codepageForLabel(std::string(ron_browser::declared_charset(asSlice(bytes))));
         if (!declared.empty()) {
@@ -88,5 +77,31 @@ DecodedPage loadPage(const QString &path, const std::string &forcedEncoding)
             decode(page, bytes, std::string(detection.encoding));
         }
     }
+}
+
+} // namespace
+
+DecodedPage loadPage(const QString &path, const std::string &forcedEncoding)
+{
+    DecodedPage page;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        page.error = file.errorString();
+        return page;
+    }
+    if (file.size() > maxPageBytes) {
+        page.error = QObject::tr("The file is too large to open.");
+        return page;
+    }
+    const QByteArray content = file.readAll();
+    decodeContent(page, std::string_view(content.constData(), static_cast<size_t>(content.size())), forcedEncoding,
+                  std::string());
+    return page;
+}
+
+DecodedPage decodeFetchedPage(std::string_view bytes, const std::string &charset)
+{
+    DecodedPage page;
+    decodeContent(page, bytes, std::string(), charset);
     return page;
 }

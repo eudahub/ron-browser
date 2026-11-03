@@ -33,6 +33,7 @@ const std::uint8_t lineThroughBit = 4;
 
 struct PageView::PageHolder {
     std::optional<rust::Box<ron_browser::Page>> page;
+    std::optional<rust::Box<ron_browser::ImageFetch>> imageFetch;
     // Each wraps the decoded pixels on the Rust side, without copying them.
     std::vector<std::optional<QImage>> images;
     std::vector<std::optional<QPixmap>> tiles;
@@ -72,8 +73,11 @@ struct PageView::PageHolder {
 
 PageView::PageView(QWidget *parent)
     : QAbstractScrollArea(parent), holder(std::make_unique<PageHolder>()), resizeTimer(new QTimer(this)),
-      dragScrollTimer(new QTimer(this))
+      dragScrollTimer(new QTimer(this)), imageTimer(new QTimer(this))
 {
+    // Each new image takes a new layout, so several arriving together should share one.
+    imageTimer->setInterval(150);
+    connect(imageTimer, &QTimer::timeout, this, &PageView::takeImages);
     dragScrollTimer->setInterval(50);
     connect(dragScrollTimer, &QTimer::timeout, this, &PageView::scrollWhileDragging);
     viewport()->setMouseTracking(true);
@@ -93,7 +97,7 @@ PageView::~PageView() = default;
 
 void PageView::setPage(const std::string &utf8, const QString &directory)
 {
-    holder->forgetImages();
+    forgetPage();
     const QByteArray path = directory.toUtf8();
     holder->page = ron_browser::open_page(utf8, rust::Str(path.constData(), static_cast<size_t>(path.size())));
     verticalScrollBar()->setValue(0);
@@ -105,12 +109,50 @@ void PageView::setPage(const std::string &utf8, const QString &directory)
 
 void PageView::clearPage()
 {
-    holder->forgetImages();
+    forgetPage();
     holder->page.reset();
     setHoveredLink(QString());
     pressedLink.clear();
     updateScrollBars();
     viewport()->update();
+}
+
+void PageView::forgetPage()
+{
+    imageTimer->stop();
+    holder->imageFetch.reset();
+    holder->forgetImages();
+}
+
+void PageView::fetchImages(const QString &pageAddress)
+{
+    if (holder->page) {
+        const QByteArray address = pageAddress.toUtf8();
+        holder->imageFetch =
+            (*holder->page)->start_image_fetch(rust::Str(address.constData(), static_cast<size_t>(address.size())));
+        imageTimer->start();
+    }
+}
+
+bool PageView::isLoadingImages() const
+{
+    return holder->imageFetch.has_value();
+}
+
+void PageView::takeImages()
+{
+    if (!holder->page || !holder->imageFetch) {
+        imageTimer->stop();
+        return;
+    }
+    if ((*holder->page)->take_images(**holder->imageFetch)) {
+        // The numbers of images stay, so what is cached stays right.
+        layOut();
+    }
+    if ((*holder->imageFetch)->is_done()) {
+        imageTimer->stop();
+        holder->imageFetch.reset();
+    }
 }
 
 bool PageView::hasPage() const

@@ -85,7 +85,7 @@ install(CODE "
 option(BUILD_TESTING "Build the tests of the window" ON)
 if(BUILD_TESTING)
     enable_testing()
-    find_package(Qt6 REQUIRED COMPONENTS Test)
+    find_package(Qt6 REQUIRED COMPONENTS Test Network)
     add_executable(pageview_test
         tests/pageview_test.cpp
         ui/pageview.cpp
@@ -106,7 +106,7 @@ if(BUILD_TESTING)
         ui/textmeasure.cpp
         ui/textmeasure.h)
     target_include_directories(mainwindow_test PRIVATE ui ${CXXBRIDGE_INCLUDES})
-    target_link_libraries(mainwindow_test PRIVATE core Qt6::Widgets Qt6::Test ${CMAKE_DL_LIBS})
+    target_link_libraries(mainwindow_test PRIVATE core Qt6::Widgets Qt6::Test Qt6::Network ${CMAKE_DL_LIBS})
     add_test(NAME mainwindow_test COMMAND mainwindow_test)
     set_tests_properties(pageview_test mainwindow_test PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen"

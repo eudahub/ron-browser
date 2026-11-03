@@ -3,10 +3,15 @@
 #include "pageview.h"
 
 #include <QAction>
+#include <QBuffer>
 #include <QFile>
+#include <QImage>
 #include <QLineEdit>
+#include <QPixmap>
 #include <QScrollBar>
 #include <QStatusBar>
+#include <QTcpServer>
+#include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -40,16 +45,65 @@ private slots:
     void aLinkToNothingLeavesThePage();
     void linksToElsewhereStayNamedOnly();
     void theAddressLineFollowsAndLeads();
+    void pagesComeFromTheNetworkWithTheirImages();
+    void backGoesToBeforeARedirect();
+    void whatFailsLeavesThePageAndTheTypedAddress();
+    void aPageOnTheNetworkCannotOpenLocalFiles();
+    void stoppingLeavesThePageAsItWas();
     void aButtonOfTheMouseGoesBack();
 
 private:
+    void answerRequest(QTcpSocket *socket);
+    QString serverAddress(const QString &path) const;
     void write(const QString &name, const QByteArray &content);
     void click(QPoint at = {10, 8});
     QAction *action(const QString &text) const;
 
     QTemporaryDir directory;
     MainWindow *window = nullptr;
+    QTcpServer server;
+    QStringList served;
 };
+
+QString MainWindowTest::serverAddress(const QString &path) const
+{
+    return QStringLiteral("http://127.0.0.1:%1%2").arg(server.serverPort()).arg(path);
+}
+
+void MainWindowTest::answerRequest(QTcpSocket *socket)
+{
+    const QByteArray request = socket->readAll();
+    const QString path = QString::fromUtf8(request.split(' ').value(1));
+    served << path;
+    const auto respond = [&](const QByteArray &status, const QByteArray &headers, const QByteArray &body) {
+        socket->write("HTTP/1.1 " + status + "\r\n" + headers + "Content-Length: " + QByteArray::number(body.size())
+                      + "\r\nConnection: close\r\n\r\n" + body);
+        socket->disconnectFromHost();
+    };
+    const QByteArray html = "Content-Type: text/html\r\n";
+    if (path == QStringLiteral("/net.html")) {
+        respond("200 OK", html,
+                "<title>On the net</title>" + head + "<a href=next.html>on</a><br><img src=picture.png>");
+    } else if (path == QStringLiteral("/next.html")) {
+        respond("200 OK", html, "<title>Next</title>" + head + "<p>the end</p>");
+    } else if (path == QStringLiteral("/to-file.html")) {
+        respond("200 OK", html, "<title>To a file</title>" + head + "<a href=file:///etc/passwd>a secret</a>");
+    } else if (path == QStringLiteral("/moved")) {
+        respond("302 Found", "Location: /next.html\r\n", "");
+    } else if (path == QStringLiteral("/picture.png")) {
+        QImage image(40, 40, QImage::Format_RGB32);
+        image.fill(QColor(10, 20, 30));
+        QByteArray png;
+        QBuffer buffer(&png);
+        buffer.open(QIODevice::WriteOnly);
+        image.save(&buffer, "PNG");
+        respond("200 OK", "Content-Type: image/png\r\n", png);
+    } else if (path == QStringLiteral("/photo.jpg")) {
+        respond("200 OK", "Content-Type: image/jpeg\r\n", "not really");
+    } else if (path != QStringLiteral("/never")) {
+        respond("404 Not Found", "", "gone");
+    }
+}
 
 void MainWindowTest::write(const QString &name, const QByteArray &content)
 {
@@ -60,6 +114,16 @@ void MainWindowTest::write(const QString &name, const QByteArray &content)
 
 void MainWindowTest::init()
 {
+    served.clear();
+    if (!server.isListening()) {
+        QVERIFY(server.listen(QHostAddress::LocalHost));
+        connect(&server, &QTcpServer::newConnection, this, [this] {
+            while (QTcpSocket *socket = server.nextPendingConnection()) {
+                connect(socket, &QTcpSocket::readyRead, this, [this, socket] { answerRequest(socket); });
+                connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+            }
+        });
+    }
     write("first.html", firstPage());
     write("second.html",
           "<title>Second</title>" + head + "<a href=third.html#end>on</a><p>x</p>");
@@ -191,6 +255,77 @@ void MainWindowTest::theAddressLineFollowsAndLeads()
     line->setText(directory.filePath("no-such-file.html"));
     QTest::keyClick(line, Qt::Key_Return);
     QCOMPARE(window->windowTitle(), QStringLiteral("Broken"));
+}
+
+void MainWindowTest::pagesComeFromTheNetworkWithTheirImages()
+{
+    auto *line = window->findChild<QLineEdit *>();
+    line->setText(serverAddress("/net.html"));
+    QTest::keyClick(line, Qt::Key_Return);
+    // The window goes on while it is being read.
+    QCOMPARE(window->windowTitle(), QStringLiteral("First"));
+    QTRY_COMPARE(window->windowTitle(), QStringLiteral("On the net"));
+    QCOMPARE(line->text(), serverAddress("/net.html"));
+    QVERIFY(window->statusBar()->currentMessage().contains(QStringLiteral("Not secure")));
+    QTRY_VERIFY(served.contains(QStringLiteral("/picture.png")));
+
+    // The image shows as soon as it has come, without anything else happening.
+    QTRY_COMPARE(window->pageView()->viewport()->grab().toImage().pixelColor(5, 30), QColor(10, 20, 30));
+
+    click();
+    QTRY_COMPARE(window->windowTitle(), QStringLiteral("Next"));
+    action("Back")->trigger();
+    QTRY_COMPARE(window->windowTitle(), QStringLiteral("On the net"));
+    action("Back")->trigger();
+    QCOMPARE(window->windowTitle(), QStringLiteral("First"));
+}
+
+void MainWindowTest::backGoesToBeforeARedirect()
+{
+    auto *line = window->findChild<QLineEdit *>();
+    line->setText(serverAddress("/moved"));
+    QTest::keyClick(line, Qt::Key_Return);
+    QTRY_COMPARE(window->windowTitle(), QStringLiteral("Next"));
+    QCOMPARE(line->text(), serverAddress("/next.html"));
+    action("Back")->trigger();
+    QCOMPARE(window->windowTitle(), QStringLiteral("First"));
+    QVERIFY(!action("Back")->isEnabled());
+}
+
+void MainWindowTest::whatFailsLeavesThePageAndTheTypedAddress()
+{
+    auto *line = window->findChild<QLineEdit *>();
+    for (const QString &address : {serverAddress("/nothing"), serverAddress("/photo.jpg")}) {
+        line->setText(address);
+        QTest::keyClick(line, Qt::Key_Return);
+        QTRY_VERIFY(!window->statusBar()->currentMessage().startsWith(QStringLiteral("Loading")));
+        QCOMPARE(window->windowTitle(), QStringLiteral("First"));
+        QCOMPARE(line->text(), address);
+        QVERIFY(!action("Back")->isEnabled());
+    }
+}
+
+void MainWindowTest::aPageOnTheNetworkCannotOpenLocalFiles()
+{
+    auto *line = window->findChild<QLineEdit *>();
+    line->setText(serverAddress("/to-file.html"));
+    QTest::keyClick(line, Qt::Key_Return);
+    QTRY_COMPARE(window->windowTitle(), QStringLiteral("To a file"));
+    click();
+    QCOMPARE(window->windowTitle(), QStringLiteral("To a file"));
+    QVERIFY(window->statusBar()->currentMessage().contains(QStringLiteral("not followed")));
+}
+
+void MainWindowTest::stoppingLeavesThePageAsItWas()
+{
+    auto *line = window->findChild<QLineEdit *>();
+    line->setText(serverAddress("/never"));
+    QTest::keyClick(line, Qt::Key_Return);
+    QVERIFY(action("Stop")->isEnabled());
+    action("Stop")->trigger();
+    QVERIFY(!action("Stop")->isEnabled());
+    QCOMPARE(window->windowTitle(), QStringLiteral("First"));
+    QVERIFY(!action("Back")->isEnabled());
 }
 
 void MainWindowTest::aButtonOfTheMouseGoesBack()

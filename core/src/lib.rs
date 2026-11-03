@@ -8,5 +8,6 @@ pub mod history;
 pub mod images;
 pub mod layout;
 pub mod links;
+pub mod net;
 pub mod page;
 pub mod selection;
