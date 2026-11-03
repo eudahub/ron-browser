@@ -1011,6 +1011,10 @@ impl Layouter<'_> {
             return true;
         }
         if in_flex_structure {
+            // It makes no box, and what it holds takes its place.
+            if style.display == Display::Contents {
+                return true;
+            }
             let goes_on = self.enter_flex_item(id, style);
             if goes_on {
                 self.begin_inner_layout(id, style);
@@ -1688,11 +1692,15 @@ impl Layouter<'_> {
             + style.border_width.left
             + style.border_width.right;
         let extra = margin_left + margin_right + insets;
-        // Without a set width, a float is as wide as what it holds, as far as there is room.
-        let content_width = resolve(style.width, available).unwrap_or_else(|| {
-            self.preferred_width(id, depth)
-                .min((available - extra).max(0.0))
-        });
+        // Without a set width, a float is as wide as what it holds, as far as there is room. A table
+        // knows better, as it cannot get narrower than its columns.
+        let content_width = match self.table_content_width(id, style) {
+            Some(width) => width,
+            None => resolve(style.width, available).unwrap_or_else(|| {
+                self.preferred_width(id, depth)
+                    .min((available - extra).max(0.0))
+            }),
+        };
         let is_left = style.float == Float::Left;
         let saved = FloatReturn {
             cursor: self.cursor,

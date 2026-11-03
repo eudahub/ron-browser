@@ -327,6 +327,60 @@ fn a_grid_nests_and_gives_its_width() {
 }
 
 #[test]
+fn the_shorthand_sets_rows_columns_and_areas() {
+    let plain = show(&format!(
+        "<div style='display:grid;grid-template:50px 60px / 100px 200px'>{}</div>",
+        cells(&["a", "b", "c"])
+    ));
+    assert_eq!(place(&plain, "b"), (100.0, 0.0));
+    assert_eq!(place(&plain, "c"), (0.0, 50.0));
+    let areas = show(
+        "<style>.page{display:grid;grid-template:'head head' 30px 'side main' 40px / 100px 1fr}</style>\
+         <div class=page><div style='grid-area:main'>main</div><div style='grid-area:head'>head</div>\
+         <div style='grid-area:side'>side</div></div>",
+    );
+    assert_eq!(place(&areas, "head"), (0.0, 0.0));
+    assert_eq!(place(&areas, "side"), (0.0, 30.0));
+    assert_eq!(place(&areas, "main"), (100.0, 30.0));
+    let short = show(&format!(
+        "<div style='display:grid;grid:auto / 70px 1fr'>{}</div>",
+        cells(&["a", "b"])
+    ));
+    assert_eq!(place(&short, "b").0, 70.0);
+    // Sizes with brackets stay whole.
+    let functions = show(&format!(
+        "<div style='display:grid;grid-template:minmax(10px, 20px) / minmax(0, 1fr) repeat(2, 100px)'>{}</div>",
+        cells(&["a", "b", "c"])
+    ));
+    assert_eq!(place(&functions, "b").0, 600.0);
+}
+
+#[test]
+fn an_element_without_a_box_leaves_its_items_to_the_grid() {
+    let layout = show(
+        "<div style='display:grid;grid-template-columns:100px 200px 300px'>\
+         <div>a</div><main style='display:contents'><div>b</div><span>c</span></main></div>",
+    );
+    assert_eq!(place(&layout, "a").0, 0.0);
+    assert_eq!(place(&layout, "b").0, 100.0);
+    assert_eq!(place(&layout, "c").0, 300.0);
+    let areas = show(
+        "<style>.g{display:grid;grid-template-columns:100px 1fr;grid-template-areas:'side main'}</style>\
+         <div class=g><main style='display:contents'><div style='grid-area:main'>m</div>\
+         <div style='grid-area:side'>s</div></main></div>",
+    );
+    assert_eq!(place(&areas, "m").0, 100.0);
+    assert_eq!(place(&areas, "s").0, 0.0);
+    let flexible = show(
+        "<div style='display:flex'><div>aa</div><div style='display:contents'><div>bb</div>text</div></div>",
+    );
+    assert_eq!(place(&flexible, "bb").0, 16.0);
+    assert_eq!(place(&flexible, "text").0, 32.0);
+    let in_contents = show("<div style='display:contents'><p style='background:red'>a</p></div>");
+    assert_eq!(filled(&in_contents)[0].width, 800.0);
+}
+
+#[test]
 fn what_is_not_understood_is_left_out() {
     let layout = show(&format!(
         "<div style='display:grid;grid-template-columns:what is this;grid-column:/ /'>{}</div>",

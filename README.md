@@ -11,7 +11,7 @@ Lengths can be written with `calc()`, `min()`, `max()` and `clamp()`, apart from
 a percentage in several ways at once, like the smallest of three different percentages.
 
 Grids show once all of them has come, and do not have `grid-auto-flow: column`, `dense`, `grid-auto-columns`,
-named lines other than those of areas, subgrids or the `grid` and `grid-template` shorthands.
+named lines other than those of areas or subgrids. The `grid` shorthand only takes what `grid-template` does.
 `examples/grid.html` shows what they can do.
 
 Fixed boxes go by the first screen and scroll with the page, and sticky ones stay in the flow. All `z-index`

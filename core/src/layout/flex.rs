@@ -257,6 +257,26 @@ impl Layouter<'_> {
         found
     }
 
+    /// What stands in a box, where what an element holds takes its place if it makes no box itself.
+    fn items_within(&self, id: NodeId) -> Vec<NodeId> {
+        let document = self.document;
+        let mut found = Vec::new();
+        let mut waiting: Vec<NodeId> = document.children(id).collect();
+        waiting.reverse();
+        while let Some(node) = waiting.pop() {
+            if document.kind(node) == NodeKind::Element
+                && self.styles.get(node).display == Display::Contents
+            {
+                let at = waiting.len();
+                waiting.extend(document.children(node));
+                waiting[at..].reverse();
+            } else {
+                found.push(node);
+            }
+        }
+        found
+    }
+
     fn measure_flex(&mut self, id: NodeId) -> FlexContent {
         let document = self.document;
         let style = self.styles.get(id);
@@ -268,8 +288,7 @@ impl Layouter<'_> {
         let depth = self.inline_box_depth;
         let mut items = Vec::new();
         let (mut least, mut wanted) = (0.0_f32, 0.0_f32);
-        let children: Vec<NodeId> = document.children(id).collect();
-        for child in children {
+        for child in self.items_within(id) {
             let (kind, inner_least, inner_wanted, sides) = match document.kind(child) {
                 NodeKind::Text => {
                     if document

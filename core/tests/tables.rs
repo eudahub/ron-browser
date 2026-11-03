@@ -319,6 +319,15 @@ fn a_table_can_be_centered_and_can_float() {
 }
 
 #[test]
+fn a_float_is_not_narrower_than_its_columns() {
+    let layout = show(
+        "<table style='float:right;width:50px;background:red'><tr><td>aaaaaaaaaaaaaaaa</table>",
+        800.0,
+    );
+    assert_eq!(rectangles(&layout)[0].width, 128.0);
+}
+
+#[test]
 fn a_caption_goes_above() {
     let layout = show(
         "<table><caption>long caption</caption><tr><td>a<td>b</table>",
