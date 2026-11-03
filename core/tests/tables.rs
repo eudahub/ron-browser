@@ -196,6 +196,21 @@ fn text_wraps_when_there_is_too_little_room_but_words_stay_whole() {
 }
 
 #[test]
+fn what_does_not_wrap_only_counts_for_itself() {
+    let layout = show(
+        "<table><tr><td>aa bb cc dd ee ff <span style='white-space:nowrap'>gggg gggg</span><td>h</table>",
+        100.0,
+    );
+    // The first column can be as narrow as 72 for the part that stays together, of the 100 there is.
+    assert!(text(&layout, "h").x <= 92.0, "{}", text(&layout, "h").x);
+    let new_line = show(
+        "<table style='width:10px'><tr><td>aa bb cc dd<br><span style='white-space:nowrap'>ee</span><td>h</table>",
+        800.0,
+    );
+    assert_eq!(text(&new_line, "h").x, 16.0);
+}
+
+#[test]
 fn nowrap_keeps_a_cell_on_one_line() {
     let layout = show("<table><tr><td nowrap>a b c d<td>e</table>", 40.0);
     assert_eq!(text(&layout, "e").x, 56.0);

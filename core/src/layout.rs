@@ -1749,6 +1749,8 @@ impl Layouter<'_> {
         let mut least = 0.0_f32;
         let mut widest = 0.0_f32;
         let mut line = 0.0_f32;
+        // How far along the line it could last break, as what does not wrap only counts from there.
+        let mut last_break = 0.0_f32;
         // What the blocks open around the line take across.
         let mut around = 0.0_f32;
         // A space counts once something follows it on the line.
@@ -1846,7 +1848,13 @@ impl Layouter<'_> {
                                 space = space_width;
                             }
                             if style.white_space == WhiteSpace::Nowrap {
-                                least = least.max(line + around);
+                                // A new line has started since, when it is further than this.
+                                if last_break > line {
+                                    last_break = 0.0;
+                                }
+                                least = least.max(line - last_break + around);
+                            } else {
+                                last_break = line;
                             }
                         }
                     }
