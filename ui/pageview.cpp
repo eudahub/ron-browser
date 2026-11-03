@@ -790,6 +790,7 @@ void PageView::layOut()
         took.start();
         (*holder->page)->lay_out(static_cast<float>(size.width()), static_cast<float>(size.height()));
         lastLayoutMs = took.elapsed();
+        slowLayoutsInARow = lastLayoutMs > maxLayoutInResizeMs ? slowLayoutsInARow + 1 : 0;
         laidOutWidth = size.width();
         packTimer->start();
     }
@@ -820,9 +821,11 @@ void PageView::resizeEvent(QResizeEvent *event)
     if (!holder->page || viewport()->width() == laidOutWidth) {
         return;
     }
-    // A quick page follows the edge of the window. A slow one gets half of the time, and a timer
-    // left running, as starting it over at each step would hold it off as long as the edge moves.
-    if (lastLayoutMs <= maxLayoutInResizeMs) {
+    // A quick page follows the edge of the window, also right after a slow step, as one that comes
+    // where a condition of the page changes says nothing of the next. A page that stays slow gets
+    // half of the time, and a timer left running, as starting it over at each step would hold it off
+    // as long as the edge moves.
+    if (slowLayoutsInARow < 2) {
         resizeTimer->stop();
         layOut();
     } else if (!resizeTimer->isActive()) {
