@@ -609,16 +609,17 @@ impl Page {
     pub fn lay_out(&mut self, width: f32, height: f32, measurer: &mut dyn TextMeasurer) {
         let viewport = Viewport { width, height };
         if viewport != self.viewport {
-            // Conditions and lengths can depend on the size of the view, and when they do not, the
-            // styles stay, which is most of what a new width costs.
-            let same_styles = self.arriving.is_none()
-                && !self.styles.depend_on_view(
-                    viewport.width != self.viewport.width,
-                    viewport.height != self.viewport.height,
-                )
-                && self.sheets.hold_alike(self.viewport, viewport);
+            // Conditions and lengths can depend on the size of the view. When conditions do not
+            // change, at most a few styles do, and going through all rules is most of what a new
+            // width would cost.
+            let same_conditions =
+                self.arriving.is_none() && self.sheets.hold_alike(self.viewport, viewport);
+            let same_lengths = !self.styles.depend_on_view(
+                viewport.width != self.viewport.width,
+                viewport.height != self.viewport.height,
+            );
             self.viewport = viewport;
-            if !same_styles {
+            if !same_conditions || !(same_lengths || self.styles.follow_view(viewport)) {
                 self.apply_sheets();
             }
         }

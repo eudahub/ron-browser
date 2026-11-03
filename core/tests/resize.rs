@@ -125,3 +125,66 @@ fn what_inherits_a_length_of_the_view_follows_it() {
     let css = "html{font-size:2vw}p{margin-left:1em}";
     assert_eq!(x_at_widths(css, &[800.0, 1000.0]), [16.0, 20.0]);
 }
+
+#[test]
+fn styles_alike_in_one_view_part_in_another() {
+    let source = "<!DOCTYPE html><style>body,p{margin:0}.view{margin-left:10vw}\
+                  .fixed{margin-left:100px}.half{margin-left:5vw}</style>\
+                  <p class=view>a<p class=fixed>b<p class=half style='margin-left:calc(5vw + 50px)'>c";
+    let mut page = Page::open(source);
+    let mut measurer = Measurer::default();
+    let lefts = |page: &Page| -> Vec<f32> {
+        page.layout()
+            .items
+            .iter()
+            .filter(|item| item.kind == ItemKind::Text)
+            .map(|item| item.x)
+            .collect()
+    };
+    page.lay_out(1000.0, 500.0, &mut measurer);
+    assert_eq!(lefts(&page), [100.0, 100.0, 100.0]);
+    page.lay_out(800.0, 500.0, &mut measurer);
+    assert_eq!(lefts(&page), [80.0, 100.0, 90.0]);
+    page.lay_out(1200.0, 500.0, &mut measurer);
+    assert_eq!(lefts(&page), [120.0, 100.0, 110.0]);
+}
+
+#[test]
+fn a_length_of_the_view_on_a_parent_leaves_what_is_inherited_right() {
+    let source = "<!DOCTYPE html><style>body,p{margin:0}div{margin-left:10vw;font-size:20px}\
+                  p{margin-left:1em}</style><div><p>a</div>";
+    let mut page = Page::open(source);
+    let mut measurer = Measurer::default();
+    page.lay_out(1000.0, 500.0, &mut measurer);
+    let x = |page: &Page| {
+        page.layout()
+            .items
+            .iter()
+            .find(|item| item.kind == ItemKind::Text)
+            .unwrap()
+            .x
+    };
+    assert_eq!(x(&page), 120.0);
+    page.lay_out(800.0, 500.0, &mut measurer);
+    assert_eq!(x(&page), 100.0);
+}
+
+#[test]
+fn display_stays_when_only_a_length_changes() {
+    let source = "<!DOCTYPE html><style>body,p{margin:0}div{display:flex}\
+                  span{margin-left:10vw}</style><div><span>a</span><span>b</span></div>";
+    let mut page = Page::open(source);
+    let mut measurer = Measurer::default();
+    let mut xs = Vec::new();
+    for width in [1000.0, 800.0] {
+        page.lay_out(width, 500.0, &mut measurer);
+        xs.extend(
+            page.layout()
+                .items
+                .iter()
+                .filter(|item| item.kind == ItemKind::Text)
+                .map(|item| item.x),
+        );
+    }
+    assert_eq!(xs, [100.0, 208.0, 80.0, 168.0]);
+}
