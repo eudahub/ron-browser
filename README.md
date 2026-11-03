@@ -2,8 +2,9 @@
 Web browser built on the [ron](https://github.com/eudahub/ron) engine, with a window in Qt.
 
 The current stage lays out local pages: blocks with margins, padding, borders and backgrounds,
-wrapped text with fonts, colors, alignment and decorations, and list markers. There are no
-images, floats, table grids, links or network yet, and table parts stack as blocks.
+wrapped text with fonts, colors, alignment and decorations, list markers, images, background
+images and floats. Text aims to land where it does in Firefox. There are no table grids, links or
+network yet, and table parts stack as blocks.
 
 ## Selecting text
 
@@ -23,6 +24,10 @@ Everything that reads untrusted page content is Rust, in `core/`, with no unsafe
 C++. Layout is there too, and asks Qt only for the widths of text. `bridge/` connects it to C++
 and holds the only unsafe code, which is generated. The C++ part in `ui/` handles the window and
 draws text runs and rectangles at the positions it gets; Qt never interprets content as HTML.
+
+Images are decoded in Rust too: PNG, JPEG, GIF (its first frame), WebP and BMP, with limits on
+their size that apply before anything is allocated. A local page can only load images from its own
+directory and below it: no other scheme, and no way out by `..`, an absolute path or a symbolic link.
 
 The exception for now is decoding: [cpg](https://github.com/eudahub/cpg), in C++, turns legacy
 encodings into UTF-8. It will move to Rust before the browser reads from a network.

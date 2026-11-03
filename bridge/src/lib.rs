@@ -1,6 +1,9 @@
 //! What C++ can call, and what Rust needs from Qt. The generated glue is the only unsafe code
 //! in the browser's Rust.
 
+use std::path::Path;
+
+use ron_browser_core::images::{ImageStore, LocalFiles};
 use ron_browser_core::layout::{self, ItemKind, TextMeasurer};
 use ron_browser_core::page;
 use ron_browser_core::selection::{Selection, Unit};
@@ -20,8 +23,13 @@ mod ffi {
     /// One thing to draw, in drawing order.
     #[derive(Clone, Copy)]
     struct DrawItem {
-        /// 0 for a filled rectangle, otherwise text.
-        is_text: bool,
+        /// 0 for a filled rectangle, 1 for text, 2 for an image and 3 for a repeated image.
+        kind: u8,
+        /// The number of the image.
+        image: u32,
+        /// Where one copy of a repeated image starts.
+        origin_x: f32,
+        origin_y: f32,
         x: f32,
         y: f32,
         width: f32,
@@ -46,7 +54,7 @@ mod ffi {
         type Page;
 
         /// Parses a page and computes its styles.
-        fn open_page(utf8: &str) -> Box<Page>;
+        fn open_page(utf8: &str, directory: &str) -> Box<Page>;
         fn title(self: &Page) -> String;
         fn plain_text(self: &Page) -> String;
 
@@ -57,6 +65,13 @@ mod ffi {
         fn layout_height(self: &Page) -> f32;
         /// As 0xAARRGGBB; 0 leaves the default background.
         fn canvas_color(self: &Page) -> u32;
+        /// The image repeated behind the whole page; `kind` is 0 when there is none.
+        fn canvas_tile(self: &Page) -> DrawItem;
+
+        fn image_width(self: &Page, image: u32) -> u32;
+        fn image_height(self: &Page, image: u32) -> u32;
+        /// Rows of red, green, blue and alpha bytes.
+        fn image_pixels(self: &Page, image: u32) -> &[u8];
 
         /// Starts a selection, by characters, words or blocks after 1, 2 or 3 clicks.
         fn press(self: &mut Page, x: f32, y: f32, clicks: i32);
@@ -135,21 +150,33 @@ impl Page {
 
     fn lay_out(&mut self, width: f32, height: f32) {
         self.page.lay_out(width, height, &mut QtMeasurer);
-        self.items = self
-            .page
-            .layout()
+        let layout = self.page.layout();
+        self.items = layout
             .items
             .iter()
-            .map(|item| ffi::DrawItem {
-                is_text: item.kind != ItemKind::Rect,
-                x: item.x,
-                y: item.y,
-                width: item.width,
-                height: item.height,
-                baseline: item.baseline,
-                color: packed(item.color),
-                font: item.font,
-                decoration: item.decoration,
+            .map(|item| {
+                let tile = (item.kind == ItemKind::Tile)
+                    .then(|| layout.tiles.get(item.start as usize))
+                    .flatten();
+                ffi::DrawItem {
+                    kind: match item.kind {
+                        ItemKind::Rect => 0,
+                        ItemKind::Text | ItemKind::Marker => 1,
+                        ItemKind::Image => 2,
+                        ItemKind::Tile => 3,
+                    },
+                    image: tile.map_or(item.start, |tile| tile.image),
+                    origin_x: tile.map_or(0.0, |tile| tile.origin_x),
+                    origin_y: tile.map_or(0.0, |tile| tile.origin_y),
+                    x: item.x,
+                    y: item.y,
+                    width: item.width,
+                    height: item.height,
+                    baseline: item.baseline,
+                    color: packed(item.color),
+                    font: item.font,
+                    decoration: item.decoration,
+                }
             })
             .collect();
     }
@@ -163,10 +190,10 @@ impl Page {
         let Some(item) = layout.items.get(index) else {
             return "";
         };
-        let text = if item.kind == ItemKind::Marker {
-            &layout.marker_text
-        } else {
-            &layout.text
+        let text = match item.kind {
+            ItemKind::Marker => &layout.marker_text,
+            ItemKind::Text => &layout.text,
+            ItemKind::Rect | ItemKind::Image | ItemKind::Tile => return "",
         };
         text.get(item.start as usize..item.end as usize)
             .unwrap_or("")
@@ -233,11 +260,48 @@ impl Page {
     fn canvas_color(&self) -> u32 {
         self.page.layout().canvas.map_or(0, packed)
     }
+
+    fn canvas_tile(&self) -> ffi::DrawItem {
+        let tile = self.page.layout().canvas_tile;
+        ffi::DrawItem {
+            kind: if tile.is_some() { 3 } else { 0 },
+            image: tile.map_or(0, |tile| tile.image),
+            origin_x: tile.map_or(0.0, |tile| tile.origin_x),
+            origin_y: tile.map_or(0.0, |tile| tile.origin_y),
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0,
+            baseline: 0.0,
+            color: 0,
+            font: 0,
+            decoration: 0,
+        }
+    }
+
+    fn image_width(&self, image: u32) -> u32 {
+        self.page.images().get(image).map_or(0, |image| image.width)
+    }
+
+    fn image_height(&self, image: u32) -> u32 {
+        self.page
+            .images()
+            .get(image)
+            .map_or(0, |image| image.height)
+    }
+
+    fn image_pixels(&self, image: u32) -> &[u8] {
+        self.page
+            .images()
+            .get(image)
+            .map_or(&[], |image| &image.rgba)
+    }
 }
 
-fn open_page(utf8: &str) -> Box<Page> {
+fn open_page(utf8: &str, directory: &str) -> Box<Page> {
+    let mut files = LocalFiles::new(Path::new(directory));
     Box::new(Page {
-        page: page::Page::open(utf8),
+        page: page::Page::open_with(utf8, &mut files, ImageStore::default()),
         items: Vec::new(),
         selection: None,
     })

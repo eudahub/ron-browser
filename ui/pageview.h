@@ -27,7 +27,8 @@ public:
     explicit PageView(QWidget *parent = nullptr);
     ~PageView() override;
 
-    void setPage(const std::string &utf8);
+    // Images load from `directory`, the one the page is in, and from nowhere else.
+    void setPage(const std::string &utf8, const QString &directory = QString());
     void clearPage();
     QString pageTitle() const;
     void layOutNow();

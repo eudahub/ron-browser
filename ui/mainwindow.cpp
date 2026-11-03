@@ -53,7 +53,7 @@ void MainWindow::openPage(const QString &path)
         statusBar()->showMessage(tr("Cannot open %1: %2").arg(path, decoded.error));
         return;
     }
-    view->setPage(decoded.utf8);
+    view->setPage(decoded.utf8, QFileInfo(path).absolutePath());
     const QString title = view->pageTitle();
     setWindowTitle(title.isEmpty() ? QFileInfo(path).fileName() : title);
     statusBar()->showMessage(tr("Encoding: %1 (%2)")

@@ -109,13 +109,17 @@ impl Selection {
         if range.is_empty() {
             return Vec::new();
         }
-        let first = layout.lines.partition_point(|line| line.bottom <= top);
+        let first = if layout.lines_in_order {
+            layout.lines.partition_point(|line| line.bottom <= top)
+        } else {
+            0
+        };
         let mut highlights = Vec::new();
         for line in &layout.lines[first..] {
-            if line.top >= bottom || line.start as usize >= range.end {
+            if line.start as usize >= range.end || (layout.lines_in_order && line.top >= bottom) {
                 break;
             }
-            if (line.end as usize) <= range.start {
+            if (line.end as usize) <= range.start || line.top >= bottom || line.bottom <= top {
                 continue;
             }
             for item in line_items(layout, line) {
@@ -181,6 +185,9 @@ fn position_at(
 ) -> Option<usize> {
     let lines = &layout.lines;
     let last = lines.last()?;
+    if !layout.lines_in_order {
+        return Some(position_among_columns(layout, x, y, measurer));
+    }
     let index = lines.partition_point(|line| line.bottom <= y);
     let Some(line) = lines.get(index) else {
         return Some(last.end as usize);
@@ -203,6 +210,28 @@ fn position_at(
             }
         }
     })
+}
+
+/// With text in floats, lines do not simply go down the page, so all are looked through for
+/// the one under the point, or else the nearest.
+fn position_among_columns(
+    layout: &Layout,
+    x: f32,
+    y: f32,
+    measurer: &mut dyn TextMeasurer,
+) -> usize {
+    let distance = |line: &Line| {
+        let across = (line.left - x).max(x - line.right).max(0.0);
+        let down = (line.top - y).max(y - line.bottom).max(0.0);
+        // Being on the level of a line counts for more than being near it sideways.
+        down * 1000.0 + across
+    };
+    let nearest = layout
+        .lines
+        .iter()
+        .min_by(|a, b| distance(a).total_cmp(&distance(b)))
+        .expect("the caller checked that there are lines");
+    position_in_line(layout, nearest, x, measurer)
 }
 
 fn line_items<'a>(layout: &'a Layout, line: &Line) -> &'a [Item] {

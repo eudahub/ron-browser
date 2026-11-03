@@ -195,9 +195,12 @@ def main():
             browser_shot = out_directory / f"{name}-ron.png"
             # Firefox writes where it may, so the shot comes back through the work directory.
             shot = work / f"{name}-firefox.png"
-            shoot_firefox(page, shot, work / "profile", arguments.width, arguments.height)
-            shutil.copy(shot, firefox_shot)
+            # Firefox only shoots its window, so make that as tall as the whole page.
             shoot_browser(arguments.browser, page, browser_shot, arguments.width, arguments.height)
+            height = Image.open(browser_shot).height
+            shoot_firefox(page, shot, work / "profile", arguments.width, height)
+            shutil.copy(shot, firefox_shot)
+            shoot_browser(arguments.browser, page, browser_shot, arguments.width, height)
             total += compare(firefox_shot, browser_shot, out_directory, name)
     finally:
         shutil.rmtree(work, ignore_errors=True)

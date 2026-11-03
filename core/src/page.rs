@@ -1,8 +1,9 @@
 //! An opened page: its tree, styles and layout.
 
 use ron::css::{Styles, Viewport, compute_styles, document_stylesheets};
-use ron::html::{Document, Tag, parse};
+use ron::html::{Document, NodeKind, Tag, parse};
 
+use crate::images::{ImageStore, NoResources, ResourceLoader};
 use crate::layout::{FontSpec, Layout, TextMeasurer, layout};
 
 pub struct Page {
@@ -10,6 +11,7 @@ pub struct Page {
     styles: Styles,
     viewport: Viewport,
     layout: Layout,
+    images: ImageStore,
 }
 
 /// For reading the text alone: sizes do not matter to which text a page shows.
@@ -31,18 +33,46 @@ impl TextMeasurer for NoMeasurer {
 }
 
 impl Page {
-    /// Parses a page and computes its styles.
+    /// Parses a page and computes its styles, without loading anything it refers to.
     #[must_use]
     pub fn open(utf8: &str) -> Self {
+        Self::open_with(utf8, &mut NoResources, ImageStore::default())
+    }
+
+    /// Parses a page, computes its styles, and loads its images through `loader`, on top of
+    /// those already in `images`.
+    pub fn open_with(utf8: &str, loader: &mut dyn ResourceLoader, images: ImageStore) -> Self {
         let document = parse(utf8);
         let viewport = Viewport::default();
         let sheets = document_stylesheets(&document, viewport);
         let styles = compute_styles(&document, &sheets, viewport);
-        Self {
+        let mut page = Self {
             document,
             styles,
             viewport,
             layout: Layout::default(),
+            images,
+        };
+        page.load_images(loader);
+        page
+    }
+
+    fn load_images(&mut self, loader: &mut dyn ResourceLoader) {
+        let document = &self.document;
+        for id in document.descendants(document.root()) {
+            if document.kind(id) != NodeKind::Element {
+                continue;
+            }
+            if document.tag(id) == Tag::Img
+                && let Some(source) = document
+                    .attributes(id)
+                    .find(|attribute| attribute.name.eq_ignore_ascii_case("src"))
+            {
+                self.images.load(&source.decoded_value(), loader);
+            }
+            if let Some(url) = &self.styles.get(id).background_image {
+                self.images.load(url, loader);
+            }
         }
     }
 
@@ -55,7 +85,13 @@ impl Page {
             self.styles = compute_styles(&self.document, &sheets, viewport);
             self.viewport = viewport;
         }
-        self.layout = layout(&self.document, &self.styles, width, measurer);
+        self.layout = layout(&self.document, &self.styles, &self.images, width, measurer);
+    }
+
+    /// The images of the page.
+    #[must_use]
+    pub fn images(&self) -> &ImageStore {
+        &self.images
     }
 
     /// The result of the last [`Self::lay_out`].
@@ -84,6 +120,13 @@ impl Page {
     /// All visible text in document order, as it would be copied.
     #[must_use]
     pub fn plain_text(&self) -> String {
-        layout(&self.document, &self.styles, 0.0, &mut NoMeasurer).text
+        layout(
+            &self.document,
+            &self.styles,
+            &self.images,
+            0.0,
+            &mut NoMeasurer,
+        )
+        .text
     }
 }

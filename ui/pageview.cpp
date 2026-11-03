@@ -3,6 +3,7 @@
 #include "textmeasure.h"
 
 #include <QApplication>
+#include <QImage>
 #include <QClipboard>
 #include <QMouseEvent>
 #include <QPaintEvent>
@@ -17,7 +18,9 @@
 #include <ron-browser-bridge/src/lib.rs.h>
 
 #include <algorithm>
+#include <cmath>
 #include <optional>
+#include <vector>
 
 namespace {
 
@@ -29,6 +32,41 @@ const std::uint8_t lineThroughBit = 4;
 
 struct PageView::PageHolder {
     std::optional<rust::Box<ron_browser::Page>> page;
+    // Each wraps the decoded pixels on the Rust side, without copying them.
+    std::vector<std::optional<QImage>> images;
+    std::vector<std::optional<QPixmap>> tiles;
+
+    const QImage &image(std::uint32_t number)
+    {
+        if (number >= images.size()) {
+            images.resize(number + 1);
+        }
+        if (!images[number]) {
+            const auto &loaded = *page;
+            const auto pixels = loaded->image_pixels(number);
+            images[number] = QImage(pixels.data(), static_cast<int>(loaded->image_width(number)),
+                                    static_cast<int>(loaded->image_height(number)),
+                                    QImage::Format_RGBA8888);
+        }
+        return *images[number];
+    }
+
+    const QPixmap &tile(std::uint32_t number)
+    {
+        if (number >= tiles.size()) {
+            tiles.resize(number + 1);
+        }
+        if (!tiles[number]) {
+            tiles[number] = QPixmap::fromImage(image(number));
+        }
+        return *tiles[number];
+    }
+
+    void forgetImages()
+    {
+        images.clear();
+        tiles.clear();
+    }
 };
 
 PageView::PageView(QWidget *parent)
@@ -52,9 +90,11 @@ PageView::PageView(QWidget *parent)
 
 PageView::~PageView() = default;
 
-void PageView::setPage(const std::string &utf8)
+void PageView::setPage(const std::string &utf8, const QString &directory)
 {
-    holder->page = ron_browser::open_page(utf8);
+    holder->forgetImages();
+    const QByteArray path = directory.toUtf8();
+    holder->page = ron_browser::open_page(utf8, rust::Str(path.constData(), static_cast<size_t>(path.size())));
     verticalScrollBar()->setValue(0);
     horizontalScrollBar()->setValue(0);
     layOut();
@@ -62,6 +102,7 @@ void PageView::setPage(const std::string &utf8)
 
 void PageView::clearPage()
 {
+    holder->forgetImages();
     holder->page.reset();
     updateScrollBars();
     viewport()->update();
@@ -276,7 +317,24 @@ void PageView::paintEvent(QPaintEvent *event)
     const qreal scrollX = horizontalScrollBar()->value();
     const qreal scrollY = verticalScrollBar()->value();
     painter.translate(-scrollX, -scrollY);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform);
     const QRectF visible = QRectF(dirty).translated(scrollX, scrollY);
+    const auto drawTiles = [&](const ron_browser::DrawItem &item, const QRectF &area) {
+        const QPixmap &pixmap = holder->tile(item.image);
+        if (pixmap.isNull()) {
+            return;
+        }
+        // How far into the image the area starts, counting from where a copy begins.
+        const QPointF into(std::fmod(area.left() - item.origin_x, pixmap.width()),
+                           std::fmod(area.top() - item.origin_y, pixmap.height()));
+        painter.drawTiledPixmap(area, pixmap,
+                                QPointF(into.x() < 0 ? into.x() + pixmap.width() : into.x(),
+                                        into.y() < 0 ? into.y() + pixmap.height() : into.y()));
+    };
+    const auto canvasTile = page->canvas_tile();
+    if (canvasTile.kind == 3) {
+        drawTiles(canvasTile, visible);
+    }
     const auto items = page->items();
     for (size_t index = 0; index < items.size(); ++index) {
         const auto &item = items[index];
@@ -285,8 +343,16 @@ void PageView::paintEvent(QPaintEvent *event)
             continue;
         }
         const QColor color = QColor::fromRgba(item.color);
-        if (!item.is_text) {
+        if (item.kind == 0) {
             painter.fillRect(box, color);
+            continue;
+        }
+        if (item.kind == 2) {
+            painter.drawImage(box, holder->image(item.image));
+            continue;
+        }
+        if (item.kind == 3) {
+            drawTiles(item, box);
             continue;
         }
         const rust::Str text = page->item_text(index);

@@ -5,14 +5,18 @@
 //! to ranges of it. Selection and copying work on that string, so they follow the text and
 //! not the geometry. List markers live apart from it, so they cannot be selected.
 //!
-//! Not handled yet: floats, tables as grids, images, and positioned boxes, which stay in the
-//! flow. Table parts stack as blocks for now.
+//! Floats take their place at the side, and lines of text go around them. Not handled yet:
+//! tables as grids, and positioned boxes, which stay in the flow. Table parts stack as blocks
+//! for now.
 
 use std::collections::HashMap;
 
+use crate::images::ImageStore;
+
 use ron::css::{
-    BorderStyle, Color, ComputedStyle, Display, LineHeight, ListStyleType, Size, Styles, TextAlign,
-    TextTransform, VerticalAlign, VerticalPosition, Visibility, WhiteSpace,
+    BackgroundRepeat, BorderStyle, Clear, Color, ComputedStyle, Display, Float, LineHeight,
+    ListStyleType, Overflow, Size, Styles, TextAlign, TextTransform, VerticalAlign,
+    VerticalPosition, Visibility, WhiteSpace,
 };
 use ron::html::{Document, NodeId, NodeKind, Tag};
 
@@ -42,6 +46,19 @@ pub enum ItemKind {
     Text,
     /// Text from [`Layout::marker_text`], which cannot be selected.
     Marker,
+    /// The image whose number is `start`, filling the item's box.
+    Image,
+    /// The image of [`Layout::tiles`] at `start`, repeated to fill the item's box.
+    Tile,
+}
+
+/// How a repeated image lines up.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Tile {
+    pub image: u32,
+    /// Where one copy of the image starts, from which all others follow.
+    pub origin_x: f32,
+    pub origin_y: f32,
 }
 
 /// One thing to draw, in drawing order.
@@ -68,6 +85,8 @@ pub struct Item {
 pub struct Line {
     pub top: f32,
     pub bottom: f32,
+    pub left: f32,
+    pub right: f32,
     /// The text items of this line, from left to right.
     pub first_item: u32,
     pub item_count: u32,
@@ -87,6 +106,10 @@ pub struct Layout {
     pub height: f32,
     /// What the area behind the page is filled with.
     pub canvas: Option<Color>,
+    pub canvas_tile: Option<Tile>,
+    pub tiles: Vec<Tile>,
+    /// Whether lines go down the page in order, which floats with text in them can upset.
+    pub lines_in_order: bool,
 }
 
 /// Collapsed margins that wait for what comes next.
@@ -107,6 +130,37 @@ impl Margin {
     }
 }
 
+/// Where the normal flow was when a float started.
+#[derive(Clone, Copy)]
+struct FloatReturn {
+    cursor: f32,
+    margin: Margin,
+    is_left: bool,
+    margin_right: f32,
+    margin_left: f32,
+    margin_top: f32,
+    margin_bottom: f32,
+}
+
+/// The room a float takes up, with its margins.
+#[derive(Clone, Copy)]
+struct FloatBox {
+    is_left: bool,
+    left: f32,
+    right: f32,
+    top: f32,
+    bottom: f32,
+}
+
+/// An image among the text of a line.
+#[derive(Clone, Copy)]
+struct Atom {
+    node: NodeId,
+    image: Option<u32>,
+    width: f32,
+    height: f32,
+}
+
 struct Frame {
     node: NodeId,
     /// The border box.
@@ -118,6 +172,12 @@ struct Frame {
     content_width: f32,
     bottom_inset: f32,
     border_top: f32,
+    /// Keeps its floats inside, unlike an ordinary block, which lets them hang out.
+    contains_floats: bool,
+    lowest_float: f32,
+    /// What to go back to when this block is a float.
+    float_return: Option<FloatReturn>,
+    background_tile: Option<usize>,
     padding_top: f32,
     margin_bottom: f32,
     height: Option<f32>,
@@ -144,6 +204,10 @@ struct Run {
     line_height: f32,
     shift: f32,
     background: Color,
+    /// An image in place of text. Its text range is empty.
+    atom: Option<Atom>,
+    /// Text right in the block, not in an inline element.
+    direct: bool,
 }
 
 impl Run {
@@ -156,6 +220,9 @@ impl Run {
             && self.line_height.to_bits() == other.line_height.to_bits()
             && self.shift.to_bits() == other.shift.to_bits()
             && self.background == other.background
+            && self.direct == other.direct
+            && self.atom.is_none()
+            && other.atom.is_none()
     }
 }
 
@@ -175,11 +242,22 @@ struct Marker {
     color: Color,
     width: f32,
     right: f32,
+    gap: f32,
 }
 
 struct Layouter<'a> {
     document: &'a Document,
     styles: &'a Styles,
+    images: &'a ImageStore,
+    /// The element whose background is that of the whole page, and not its own.
+    canvas_node: Option<NodeId>,
+    floats: Vec<FloatBox>,
+    lowest_float: f32,
+    in_float: usize,
+    /// Whether the block being collected has anything on its line yet.
+    has_inline_content: bool,
+    /// Whether what separates it from the text before has been added.
+    text_begun: bool,
     measurer: &'a mut dyn TextMeasurer,
     fonts: HashMap<usize, u32>,
     /// Asking the toolkit for each word is what would take the most time on a long page,
@@ -203,12 +281,21 @@ struct Layouter<'a> {
 pub fn layout(
     document: &Document,
     styles: &Styles,
+    images: &ImageStore,
     width: f32,
     measurer: &mut dyn TextMeasurer,
 ) -> Layout {
+    let canvas_node = canvas_node(document, styles);
     let mut layouter = Layouter {
         document,
         styles,
+        images,
+        canvas_node,
+        floats: Vec::new(),
+        lowest_float: 0.0,
+        in_float: 0,
+        has_inline_content: false,
+        text_begun: false,
         measurer,
         fonts: HashMap::new(),
         word_widths: HashMap::new(),
@@ -222,6 +309,10 @@ pub fn layout(
             content_width: width,
             bottom_inset: 0.0,
             border_top: 0.0,
+            contains_floats: false,
+            lowest_float: 0.0,
+            float_return: None,
+            background_tile: None,
             padding_top: 0.0,
             margin_bottom: 0.0,
             height: None,
@@ -240,28 +331,92 @@ pub fn layout(
     };
     layouter.run();
     let mut result = layouter.out;
-    result.canvas = canvas_color(document, styles);
     result.width = result.width.max(width);
+    if let Some(node) = canvas_node {
+        let style = styles.get(node);
+        let color = style.background_color;
+        result.canvas = (color.alpha != 0).then_some(color);
+        result.canvas_tile = background_tile(style, images, 0.0, 0.0, result.width, result.height)
+            .map(|(tile, _, _, _, _)| tile);
+    }
+    result.lines_in_order = result
+        .lines
+        .windows(2)
+        .all(|pair| pair[0].bottom <= pair[1].top);
     result.text.shrink_to_fit();
     result.items.shrink_to_fit();
     result.lines.shrink_to_fit();
     result
 }
 
-/// The background of the root element, or of `<body>` when the root has none.
-fn canvas_color(document: &Document, styles: &Styles) -> Option<Color> {
+/// The element that gives the whole page its background: the root element, or `<body>` when
+/// the root has none.
+fn canvas_node(document: &Document, styles: &Styles) -> Option<NodeId> {
+    let has_background = |id: NodeId| {
+        let style = styles.get(id);
+        style.background_color.alpha != 0 || style.background_image.is_some()
+    };
     let html = document
         .children(document.root())
         .find(|&id| document.kind(id) == NodeKind::Element)?;
-    let color = styles.get(html).background_color;
-    if color.alpha != 0 {
-        return Some(color);
+    if has_background(html) {
+        return Some(html);
     }
-    let body = document
+    document
         .children(html)
-        .find(|&id| document.tag(id) == Tag::Body)?;
-    let color = styles.get(body).background_color;
-    (color.alpha != 0).then_some(color)
+        .find(|&id| document.tag(id) == Tag::Body)
+        .filter(|&body| has_background(body))
+}
+
+/// Works out how a background image fills a box: how it lines up, and the part of the box it
+/// covers, as x, y, width and height.
+fn background_tile(
+    style: &ComputedStyle,
+    images: &ImageStore,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+) -> Option<(Tile, f32, f32, f32, f32)> {
+    let number = images.number(style.background_image.as_deref()?)?;
+    let image = images.get(number)?;
+    #[allow(clippy::cast_precision_loss)]
+    let (image_width, image_height) = (image.width as f32, image.height as f32);
+    let place = |size: Size, room: f32, own: f32| match size {
+        Size::Auto => 0.0,
+        Size::Px(px) => px,
+        Size::Percent(percent) => (room - own) * percent / 100.0,
+    };
+    let origin_x = x + place(style.background_position_x, width, image_width);
+    let origin_y = y + place(style.background_position_y, height, image_height);
+    let (repeats_x, repeats_y) = match style.background_repeat {
+        BackgroundRepeat::Repeat => (true, true),
+        BackgroundRepeat::RepeatX => (true, false),
+        BackgroundRepeat::RepeatY => (false, true),
+        BackgroundRepeat::NoRepeat => (false, false),
+    };
+    let span = |repeats: bool, start: f32, room: f32, origin: f32, own: f32| {
+        if repeats {
+            (start, room)
+        } else {
+            let from = origin.max(start);
+            let to = (origin + own).min(start + room);
+            (from, (to - from).max(0.0))
+        }
+    };
+    let (cover_x, cover_width) = span(repeats_x, x, width, origin_x, image_width);
+    let (cover_y, cover_height) = span(repeats_y, y, height, origin_y, image_height);
+    Some((
+        Tile {
+            image: number,
+            origin_x,
+            origin_y,
+        },
+        cover_x,
+        cover_y,
+        cover_width,
+        cover_height,
+    ))
 }
 
 /// A sunken or raised border is darker on one side: at two thirds of its color, as in Firefox.
@@ -291,12 +446,12 @@ fn resolve(size: Size, whole: f32) -> Option<f32> {
     }
 }
 
-/// Elements drawn from something else, which there is no support for yet. Their content is
+/// Elements drawn from something else, apart from images, which there is no support for yet. Their content is
 /// a fallback for browsers that lack them, or not for showing at all.
 fn is_replaced(document: &Document, id: NodeId) -> bool {
     matches!(
         document.tag(id),
-        Tag::Img | Tag::Embed | Tag::Iframe | Tag::Applet | Tag::Object
+        Tag::Embed | Tag::Iframe | Tag::Applet | Tag::Object
     ) || (document.tag(id) == Tag::Other
         && matches!(document.name(id), "video" | "audio" | "canvas"))
 }
@@ -334,7 +489,7 @@ impl Layouter<'_> {
             current = child.or_else(|| self.leave_until_next(id, descend));
         }
         self.flush_inline();
-        self.out.height = self.cursor + self.margin.value().max(0.0);
+        self.out.height = (self.cursor + self.margin.value().max(0.0)).max(self.lowest_float);
     }
 
     /// Finds the next node once `id` is done, leaving the elements that end on the way.
@@ -364,15 +519,26 @@ impl Layouter<'_> {
         if style.display == Display::None || is_replaced(self.document, id) {
             return false;
         }
+        if self.document.tag(id) == Tag::Img {
+            self.add_image(id, style);
+            return false;
+        }
         if style.text_decoration != 0 {
             let all = self.current_decoration() | style.text_decoration;
             self.decorations.push((id, all));
         }
-        if is_block(style.display) {
+        if style.float != Float::None {
+            self.flush_inline();
+            self.open_float(id, style);
+        } else if is_block(style.display) {
             self.flush_inline();
             self.open_frame(id, style);
         } else if self.document.tag(id) == Tag::Br {
             self.add_line_break(style);
+            if style.clear != Clear::None {
+                self.flush_inline();
+                self.clear_floats(style.clear);
+            }
         }
         true
     }
@@ -392,6 +558,17 @@ impl Layouter<'_> {
     }
 
     fn open_frame(&mut self, id: NodeId, style: &ComputedStyle) {
+        self.open_frame_at(id, style, None, None);
+    }
+
+    /// Opens a block. A float passes its width and where it goes, with its margins.
+    fn open_frame_at(
+        &mut self,
+        id: NodeId,
+        style: &ComputedStyle,
+        forced_width: Option<f32>,
+        float_place: Option<(f32, f32)>,
+    ) {
         let parent = self.frames.last().expect("the root frame stays");
         let (parent_x, available) = (parent.content_x, parent.content_width);
 
@@ -405,16 +582,17 @@ impl Layouter<'_> {
 
         let margin_left = resolve(style.margin.left, available);
         let margin_right = resolve(style.margin.right, available);
-        let mut wanted = resolve(style.width, available).map(|width| {
-            if style.box_sizing == ron::css::BoxSizing::BorderBox {
-                (width - insets).max(0.0)
-            } else {
-                width
-            }
+        let mut wanted = forced_width.or_else(|| {
+            resolve(style.width, available).map(|width| {
+                if style.box_sizing == ron::css::BoxSizing::BorderBox {
+                    (width - insets).max(0.0)
+                } else {
+                    width
+                }
+            })
         });
         if let Some(most) = resolve(style.max_width, available)
-            && wanted.is_none_or(|width| width > most)
-            && wanted.is_some()
+            && wanted.is_some_and(|width| width > most)
         {
             wanted = Some(most);
         }
@@ -447,37 +625,38 @@ impl Layouter<'_> {
                 (left, width)
             }
         };
-        let x = parent_x + offset;
+        let x = float_place.map_or(parent_x + offset, |(float_x, _)| float_x);
         let number = self.next_list_number(id, style);
+        let margin_top = resolve(style.margin.top, available).unwrap_or(0.0);
+        if float_place.is_none() {
+            self.margin.add(margin_top);
+            self.apply_clear(style.clear);
+        }
 
-        self.margin
-            .add(resolve(style.margin.top, available).unwrap_or(0.0));
-        let background_item = (style.background_color.alpha != 0).then(|| {
-            self.out.items.push(Item {
-                kind: ItemKind::Rect,
-                x,
-                y: 0.0,
-                width: content_width + insets,
-                height: 0.0,
-                baseline: 0.0,
-                color: style.background_color,
-                font: 0,
-                decoration: 0,
-                start: 0,
-                end: 0,
-            });
+        let paints_background = self.canvas_node != Some(id);
+        let background_item = (paints_background && style.background_color.alpha != 0).then(|| {
+            self.push_rect(x, 0.0, content_width + insets, 0.0, style.background_color);
+            self.out.items.len() - 1
+        });
+        let background_tile = (paints_background && style.background_image.is_some()).then(|| {
+            self.push_rect(x, 0.0, 0.0, 0.0, Color::TRANSPARENT);
             self.out.items.len() - 1
         });
         let height = resolve(style.height, 0.0).filter(|_| matches!(style.height, Size::Px(_)));
+        let top = float_place.map(|(_, y)| y);
         self.frames.push(Frame {
             node: id,
             x,
             width: content_width + insets,
-            top: None,
+            top,
             content_x: x + border.left + padding_left,
             content_width,
             bottom_inset: padding_bottom + border.bottom,
             border_top: border.top,
+            contains_floats: style.overflow != Overflow::Visible || float_place.is_some(),
+            lowest_float: 0.0,
+            float_return: None,
+            background_tile,
             padding_top,
             margin_bottom: resolve(style.margin.bottom, available).unwrap_or(0.0),
             height,
@@ -489,11 +668,388 @@ impl Layouter<'_> {
             background_item,
             list_number: self.start_of_list(id),
         });
-        if border.top > 0.0 || padding_top > 0.0 {
+        if let Some(y) = top {
+            if let Some(index) = background_item {
+                self.out.items[index].y = y;
+            }
+            self.cursor = y + border.top + padding_top;
+        } else if border.top > 0.0 || padding_top > 0.0 {
             self.commit_margins();
         }
         if style.display == Display::ListItem {
             self.prepare_marker(id, style, number);
+        }
+    }
+
+    fn push_rect(&mut self, x: f32, y: f32, width: f32, height: f32, color: Color) {
+        self.out.items.push(Item {
+            kind: ItemKind::Rect,
+            x,
+            y,
+            width,
+            height,
+            baseline: 0.0,
+            color,
+            font: 0,
+            decoration: 0,
+            start: 0,
+            end: 0,
+        });
+    }
+
+    /// Moves past floats that an element must stay clear of.
+    fn apply_clear(&mut self, clear: Clear) {
+        if clear == Clear::None {
+            return;
+        }
+        let below = self
+            .floats
+            .iter()
+            .filter(|float| match clear {
+                Clear::Left => float.is_left,
+                Clear::Right => !float.is_left,
+                _ => true,
+            })
+            .map(|float| float.bottom)
+            .fold(f32::MIN, f32::max);
+        if below > self.cursor + self.margin.value() {
+            self.cursor = below;
+            self.margin = Margin::default();
+        }
+    }
+
+    /// Like [`Self::apply_clear`], for a `<br clear>` between lines.
+    fn clear_floats(&mut self, clear: Clear) {
+        self.apply_clear(clear);
+    }
+
+    /// Between which positions there is room at these heights, inside the given limits.
+    fn room_at(&self, top: f32, bottom: f32, mut left: f32, mut right: f32) -> (f32, f32) {
+        for float in &self.floats {
+            if float.top < bottom && float.bottom > top {
+                if float.is_left {
+                    left = left.max(float.right);
+                } else {
+                    right = right.min(float.left);
+                }
+            }
+        }
+        (left, right)
+    }
+
+    /// Finds where a float of this size goes, at this height or further down.
+    fn place_float(
+        &self,
+        is_left: bool,
+        width: f32,
+        height: f32,
+        top: f32,
+        limits: (f32, f32),
+    ) -> (f32, f32) {
+        // A float never goes above one that came before it.
+        let mut y = self.floats.last().map_or(top, |float| top.max(float.top));
+        loop {
+            let (left, right) = self.room_at(y, y + height.max(1.0), limits.0, limits.1);
+            let next = self
+                .floats
+                .iter()
+                .filter(|float| float.top < y + height.max(1.0) && float.bottom > y)
+                .map(|float| float.bottom)
+                .fold(f32::MAX, f32::min);
+            if right - left >= width || next == f32::MAX {
+                let x = if is_left { left } else { right - width };
+                return (x, y);
+            }
+            y = next;
+        }
+    }
+
+    /// Remembers the room a float takes. Those long past are let go of, and there is a limit on
+    /// how many count at once, so that hostile pages do not make every line slow.
+    fn add_float(&mut self, float: FloatBox) {
+        if self.in_float == 0 {
+            let cursor = self.cursor;
+            self.floats.retain(|other| other.bottom > cursor);
+        }
+        if self.floats.len() >= MAX_ACTIVE_FLOATS {
+            self.floats.remove(0);
+        }
+        self.floats.push(float);
+        self.lowest_float = self.lowest_float.max(float.bottom);
+        for frame in &mut self.frames {
+            if frame.contains_floats {
+                frame.lowest_float = frame.lowest_float.max(float.bottom);
+            }
+        }
+        self.out.width = self.out.width.max(float.right);
+    }
+
+    /// Starts a float: a block at the side, which the normal flow then goes around.
+    fn open_float(&mut self, id: NodeId, style: &ComputedStyle) {
+        let parent = self.frames.last().expect("the root frame stays");
+        let (limit_left, limit_right) = (parent.content_x, parent.content_x + parent.content_width);
+        let available = parent.content_width;
+        let margin = |size| resolve(size, available).unwrap_or(0.0);
+        let margin_left = margin(style.margin.left);
+        let margin_right = margin(style.margin.right);
+        let margin_top = margin(style.margin.top);
+        let margin_bottom = margin(style.margin.bottom);
+        let padding = |size| resolve(size, available).unwrap_or(0.0);
+        let insets = padding(style.padding.left)
+            + padding(style.padding.right)
+            + style.border_width.left
+            + style.border_width.right;
+        let extra = margin_left + margin_right + insets;
+        // Without a set width, a float is as wide as what it holds, as far as there is room.
+        let content_width = resolve(style.width, available)
+            .unwrap_or_else(|| self.preferred_width(id).min((available - extra).max(0.0)));
+        let is_left = style.float == Float::Left;
+        let saved = FloatReturn {
+            cursor: self.cursor,
+            margin: self.margin,
+            is_left,
+            margin_right,
+            margin_left,
+            margin_top,
+            margin_bottom,
+        };
+        self.apply_clear(style.clear);
+        let top = self.cursor + self.margin.value();
+        let (x, y) = self.place_float(
+            is_left,
+            content_width + extra,
+            1.0,
+            top,
+            (limit_left, limit_right),
+        );
+        self.margin = Margin::default();
+        self.in_float += 1;
+        self.open_frame_at(
+            id,
+            style,
+            Some(content_width),
+            Some((x + margin_left, y + margin_top)),
+        );
+        if let Some(frame) = self.frames.last_mut() {
+            frame.float_return = Some(saved);
+        }
+    }
+
+    /// The width of a block's content without any wrapping. Walks the tree without recursion.
+    fn preferred_width(&mut self, id: NodeId) -> f32 {
+        let document = self.document;
+        let mut widest = 0.0_f32;
+        let mut line = 0.0_f32;
+        let mut current = document.first_child(id);
+        while let Some(node) = current {
+            let mut descend = false;
+            match document.kind(node) {
+                NodeKind::Element => {
+                    let style = self.styles.get(node);
+                    if style.display != Display::None && !is_replaced(document, node) {
+                        if document.tag(node) == Tag::Img {
+                            // A floating image also wants its room beside the text.
+                            let (width, _) = self.image_size(node, style, 0.0);
+                            line += width;
+                        } else if document.tag(node) == Tag::Br || is_block(style.display) {
+                            widest = widest.max(line);
+                            line = 0.0;
+                            descend = true;
+                        } else {
+                            descend = true;
+                        }
+                    }
+                }
+                NodeKind::Text => {
+                    let style = self.styles.get(node);
+                    let font = self.font_of(style);
+                    let text = document.decoded_text(node);
+                    let collapsed = text.split_ascii_whitespace().collect::<Vec<_>>().join(" ");
+                    line += self.measurer.width(font, &collapsed);
+                }
+                _ => {}
+            }
+            let child = if descend {
+                document.first_child(node)
+            } else {
+                None
+            };
+            current = child.or_else(|| {
+                let mut up = node;
+                loop {
+                    if let Some(sibling) = document.next_sibling(up) {
+                        return Some(sibling);
+                    }
+                    up = document.parent(up)?;
+                    if up == id {
+                        return None;
+                    }
+                    if is_block(self.styles.get(up).display) {
+                        widest = widest.max(line);
+                        line = 0.0;
+                    }
+                }
+            });
+        }
+        widest.max(line).ceil()
+    }
+
+    /// The size of an image's content box: what is set, or what the file has, keeping its shape.
+    fn image_size(&self, id: NodeId, style: &ComputedStyle, available: f32) -> (f32, f32) {
+        let natural = self.image_of(id).and_then(|number| self.images.get(number));
+        #[allow(clippy::cast_precision_loss)]
+        let (own_width, own_height) = natural.map_or((0.0, 0.0), |image| {
+            (image.width as f32, image.height as f32)
+        });
+        let width = resolve(style.width, available);
+        let height = match style.height {
+            Size::Px(px) => Some(px),
+            _ => None,
+        };
+        match (width, height) {
+            (Some(width), Some(height)) => (width, height),
+            (Some(width), None) if own_width > 0.0 => (width, width * own_height / own_width),
+            (None, Some(height)) if own_height > 0.0 => (height * own_width / own_height, height),
+            (Some(width), None) => (width, 0.0),
+            (None, Some(height)) => (0.0, height),
+            (None, None) => (own_width, own_height),
+        }
+    }
+
+    fn image_of(&self, id: NodeId) -> Option<u32> {
+        let source = self
+            .document
+            .attributes(id)
+            .find(|attribute| attribute.name.eq_ignore_ascii_case("src"))?
+            .decoded_value();
+        self.images.number(&source)
+    }
+
+    /// Adds an image: to the line, as a block, or as a float. One that is missing shows its
+    /// alternative text, or takes up only the room asked for.
+    fn add_image(&mut self, id: NodeId, style: &ComputedStyle) {
+        let image = self.image_of(id);
+        let available = self.frames.last().map_or(0.0, |frame| frame.content_width);
+        let (width, height) = self.image_size(id, style, available);
+        if image.is_none() && (width == 0.0 || height == 0.0) {
+            let alternative = self
+                .document
+                .attributes(id)
+                .find(|attribute| attribute.name.eq_ignore_ascii_case("alt"))
+                .map(|attribute| attribute.decoded_value().into_owned());
+            if let Some(text) = alternative
+                && let Some(start) = self.add_collapsed(style, &text, false)
+            {
+                let end = self.out.text.len();
+                let run = self.make_run(style, start, end);
+                self.push_run(run);
+                self.has_inline_content = true;
+            }
+            return;
+        }
+        let atom = Atom {
+            node: id,
+            image,
+            width,
+            height,
+        };
+        if style.float != Float::None {
+            self.place_image_float(atom, style);
+        } else if is_block(style.display) {
+            self.flush_inline();
+            self.add_block_image(atom, style);
+        } else {
+            self.flush_pending_space();
+            let start = self.out.text.len();
+            let mut run = self.make_run(style, start, start);
+            run.atom = Some(atom);
+            self.runs.push(run);
+            self.has_inline_content = true;
+        }
+    }
+
+    /// A float that is an image goes in place at once, level with the line being collected.
+    fn place_image_float(&mut self, atom: Atom, style: &ComputedStyle) {
+        let frame = self.frames.last().expect("the root frame stays");
+        let (limit_left, limit_right) = (frame.content_x, frame.content_x + frame.content_width);
+        let available = frame.content_width;
+        let sides = BoxSides::of(style, available);
+        let total_width = atom.width + sides.horizontal();
+        let total_height = atom.height + sides.vertical();
+        let is_left = style.float == Float::Left;
+        self.apply_clear(style.clear);
+        let top = self.cursor + self.margin.value();
+        let (x, y) = self.place_float(
+            is_left,
+            total_width,
+            total_height,
+            top,
+            (limit_left, limit_right),
+        );
+        self.draw_image_box(atom, style, &sides, x, y);
+        self.add_float(FloatBox {
+            is_left,
+            left: x,
+            right: x + total_width,
+            top: y,
+            bottom: y + total_height,
+        });
+    }
+
+    fn add_block_image(&mut self, atom: Atom, style: &ComputedStyle) {
+        let frame = self.frames.last().expect("the root frame stays");
+        let (left, available) = (frame.content_x, frame.content_width);
+        let sides = BoxSides::of(style, available);
+        self.margin.add(sides.margin_top);
+        self.apply_clear(style.clear);
+        self.commit_margins();
+        let top = self.cursor - sides.margin_top;
+        self.draw_image_box(atom, style, &sides, left, top);
+        self.cursor =
+            top + sides.margin_top + sides.vertical() - sides.margin_top - sides.margin_bottom
+                + atom.height;
+        self.margin.add(sides.margin_bottom);
+    }
+
+    /// Draws an image with its border, at the outer corner of its margins.
+    fn draw_image_box(
+        &mut self,
+        atom: Atom,
+        style: &ComputedStyle,
+        sides: &BoxSides,
+        x: f32,
+        y: f32,
+    ) {
+        let left = x + sides.margin_left;
+        let top = y + sides.margin_top;
+        let outer_width = atom.width
+            + sides.padding_left
+            + sides.padding_right
+            + sides.border_left
+            + sides.border_right;
+        let outer_height = atom.height
+            + sides.padding_top
+            + sides.padding_bottom
+            + sides.border_top
+            + sides.border_bottom;
+        if style.background_color.alpha != 0 {
+            self.push_rect(left, top, outer_width, outer_height, style.background_color);
+        }
+        self.push_borders(style, left, top, outer_width, top + outer_height);
+        if let Some(number) = atom.image {
+            self.out.items.push(Item {
+                kind: ItemKind::Image,
+                x: left + sides.border_left + sides.padding_left,
+                y: top + sides.border_top + sides.padding_top,
+                width: atom.width,
+                height: atom.height,
+                baseline: 0.0,
+                color: Color::TRANSPARENT,
+                font: 0,
+                decoration: 0,
+                start: number,
+                end: number,
+            });
         }
     }
 
@@ -523,7 +1079,10 @@ impl Layouter<'_> {
         }
         let needs_room = {
             let frame = self.frames.last().expect("checked above");
-            frame.bottom_inset > 0.0 || frame.height.is_some() || frame.min_height > 0.0
+            frame.bottom_inset > 0.0
+                || frame.height.is_some()
+                || frame.min_height > 0.0
+                || frame.lowest_float > 0.0
         };
         if needs_room {
             if self.frames.last().is_some_and(|frame| frame.top.is_some()) {
@@ -546,6 +1105,9 @@ impl Layouter<'_> {
         };
         let content_top = top + frame.border_top + frame.padding_top;
         let mut content_height = (self.cursor - content_top).max(0.0);
+        if frame.contains_floats {
+            content_height = content_height.max(frame.lowest_float - content_top);
+        }
         if let Some(height) = frame.height {
             content_height = height;
         }
@@ -558,16 +1120,61 @@ impl Layouter<'_> {
         if let Some(index) = frame.background_item {
             self.out.items[index].height = bottom - top;
         }
-        self.draw_borders(node, &frame, top, bottom);
-        self.margin.add(frame.margin_bottom);
+        if let Some(index) = frame.background_tile {
+            self.finish_background_tile(node, index, frame.x, top, frame.width, bottom - top);
+        }
+        self.push_borders(self.styles.get(node), frame.x, top, frame.width, bottom);
         self.out.width = self.out.width.max(frame.x + frame.width);
+        if let Some(saved) = frame.float_return {
+            self.in_float -= 1;
+            let (left, right) = (
+                frame.x - saved.margin_left,
+                frame.x + frame.width + saved.margin_right,
+            );
+            self.add_float(FloatBox {
+                is_left: saved.is_left,
+                left,
+                right,
+                top: top - saved.margin_top,
+                bottom: bottom + saved.margin_bottom,
+            });
+            self.cursor = saved.cursor;
+            self.margin = saved.margin;
+            return;
+        }
+        self.margin.add(frame.margin_bottom);
     }
 
-    fn draw_borders(&mut self, node: NodeId, frame: &Frame, top: f32, bottom: f32) {
-        let style = self.styles.get(node);
+    /// Fills in the item held for a background image, now that the box is known.
+    fn finish_background_tile(
+        &mut self,
+        node: NodeId,
+        index: usize,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    ) {
+        let Some((tile, cover_x, cover_y, cover_width, cover_height)) =
+            background_tile(self.styles.get(node), self.images, x, y, width, height)
+        else {
+            return;
+        };
+        let number = offset(self.out.tiles.len());
+        self.out.tiles.push(tile);
+        let item = &mut self.out.items[index];
+        item.kind = ItemKind::Tile;
+        item.x = cover_x;
+        item.y = cover_y;
+        item.width = cover_width;
+        item.height = cover_height;
+        item.start = number;
+        item.end = number;
+    }
+
+    fn push_borders(&mut self, style: &ComputedStyle, x: f32, top: f32, width: f32, bottom: f32) {
         let widths = style.border_width;
         let colors = style.border_color;
-        let (x, width) = (frame.x, frame.width);
         let lines = style.border_style;
         let sides = [
             (
@@ -601,19 +1208,7 @@ impl Layouter<'_> {
         ];
         for (x, y, width, height, color) in sides {
             if width > 0.0 && height > 0.0 && color.alpha != 0 {
-                self.out.items.push(Item {
-                    kind: ItemKind::Rect,
-                    x,
-                    y,
-                    width,
-                    height,
-                    baseline: 0.0,
-                    color,
-                    font: 0,
-                    decoration: 0,
-                    start: 0,
-                    end: 0,
-                });
+                self.push_rect(x, y, width, height, color);
             }
         }
     }
@@ -668,6 +1263,11 @@ impl Layouter<'_> {
         };
         let font = self.font_of(style);
         let width = self.measurer.width(font, &text);
+        let gap = if text.ends_with('.') {
+            self.measurer.width(font, " ")
+        } else {
+            style.font_size * MARKER_GAP
+        };
         let text_start = self.out.marker_text.len();
         self.out.marker_text.push_str(&text);
         let right = self
@@ -683,6 +1283,7 @@ impl Layouter<'_> {
             color: style.color,
             width,
             right,
+            gap,
         });
     }
 
@@ -693,12 +1294,13 @@ impl Layouter<'_> {
         self.out.text.push('\n');
         let run = self.make_run(style, start, start + 1);
         self.runs.push(run);
+        self.has_inline_content = true;
     }
 
     /// Before the first text of a block, separates it from the text before, as far as
     /// line ends from `<br>` have not already done so.
     fn begin_text(&mut self) {
-        if !self.runs.is_empty() || self.out.text.is_empty() {
+        if std::mem::replace(&mut self.text_begun, true) || self.out.text.is_empty() {
             return;
         }
         let gap = self
@@ -752,6 +1354,8 @@ impl Layouter<'_> {
             } else {
                 style.background_color
             },
+            atom: None,
+            direct: false,
         }
     }
 
@@ -767,10 +1371,11 @@ impl Layouter<'_> {
                 if transformed.is_empty() {
                     return;
                 }
-                self.flush_pending_space();
                 self.begin_text();
+                self.flush_pending_space();
                 let start = self.out.text.len();
                 self.out.text.push_str(&transformed);
+                self.has_inline_content = true;
                 start
             }
             WhiteSpace::Normal | WhiteSpace::Nowrap | WhiteSpace::PreLine => {
@@ -782,7 +1387,8 @@ impl Layouter<'_> {
             }
         };
         let end = self.out.text.len();
-        let run = self.make_run(style, start, end);
+        let mut run = self.make_run(style, start, end);
+        run.direct = self.document.parent(id) == self.frames.last().map(|frame| frame.node);
         self.push_run(run);
     }
 
@@ -791,7 +1397,7 @@ impl Layouter<'_> {
         let Some(mut run) = self.pending_space.take() else {
             return;
         };
-        if self.runs.is_empty() || self.out.text.ends_with('\n') {
+        if !self.has_inline_content || self.out.text.ends_with('\n') {
             return;
         }
         run.start = self.out.text.len();
@@ -835,9 +1441,10 @@ impl Layouter<'_> {
                 continue;
             }
             if start.is_none() {
-                self.flush_pending_space();
                 self.begin_text();
+                self.flush_pending_space();
                 start = Some(self.out.text.len());
+                self.has_inline_content = true;
             } else if std::mem::take(&mut space_inside) {
                 self.out.text.push(' ');
             }
@@ -852,19 +1459,29 @@ impl Layouter<'_> {
     /// Breaks the collected text of a block into lines.
     fn flush_inline(&mut self) {
         self.pending_space = None;
+        self.has_inline_content = false;
+        self.text_begun = false;
         if self.runs.is_empty() {
             return;
         }
         let runs = std::mem::take(&mut self.runs);
         let frame = self.frames.last().expect("the root frame stays");
-        let (left, available, node) = (frame.content_x, frame.content_width, frame.node);
+        let (limit_left, available, node) = (frame.content_x, frame.content_width, frame.node);
         let style = self.styles.get(node);
         let indent = resolve(style.text_indent, available).unwrap_or(0.0);
+        let align = style.text_align;
+        // Lines are at least as high as the block's own font, except in quirks mode where
+        // a line holds no text.
+        let strut = self.make_run(style, 0, 0);
         let mut block = InlineBlock {
-            align: style.text_align,
-            left,
+            align,
+            limit_left,
+            limit_right: limit_left + available,
+            left: limit_left,
             available,
             indent,
+            strut,
+            quirks: self.document.is_quirks(),
             runs,
             line: Vec::new(),
             line_width: 0.0,
@@ -872,6 +1489,7 @@ impl Layouter<'_> {
             word_width: 0.0,
         };
         self.commit_margins();
+        self.update_room(&mut block);
         for index in 0..block.runs.len() {
             self.break_run(&mut block, index);
         }
@@ -882,9 +1500,57 @@ impl Layouter<'_> {
         }
     }
 
+    /// Finds the room for a line at the current height, around floats.
+    fn update_room(&self, block: &mut InlineBlock) {
+        let height = block.strut.line_height.max(1.0);
+        let (left, right) = self.room_at(
+            self.cursor,
+            self.cursor + height,
+            block.limit_left,
+            block.limit_right,
+        );
+        block.left = left;
+        block.available = (right - left).max(0.0);
+    }
+
+    /// When a line has no room for the word beside floats, moves it below the nearest float.
+    fn move_below_float(&mut self, block: &mut InlineBlock, needed: f32) {
+        loop {
+            self.update_room(block);
+            if block.available - block.indent >= needed {
+                return;
+            }
+            let height = block.strut.line_height.max(1.0);
+            let next = self
+                .floats
+                .iter()
+                .filter(|float| float.top < self.cursor + height && float.bottom > self.cursor)
+                .map(|float| float.bottom)
+                .fold(f32::MAX, f32::min);
+            if next == f32::MAX {
+                return;
+            }
+            self.cursor = next;
+        }
+    }
+
     /// Splits a run at its spaces and line ends, adding what is between to the line.
     fn break_run(&mut self, block: &mut InlineBlock, index: usize) {
         let run = block.runs[index];
+        if let Some(atom) = run.atom {
+            // An image is a word of its own: a line can break on either side.
+            self.add_word(block);
+            let width = self.atom_width(atom);
+            block.word_width = width;
+            block.word.push(Piece {
+                run: index,
+                start: run.start,
+                end: run.start,
+                width,
+            });
+            self.add_word(block);
+            return;
+        }
         let mut position = run.start;
         while position < run.end {
             let keeps_spaces = run.keeps_spaces;
@@ -933,18 +1599,55 @@ impl Layouter<'_> {
         width
     }
 
+    fn atom_sides(&self, atom: Atom) -> BoxSides {
+        let available = self.frames.last().map_or(0.0, |frame| frame.content_width);
+        BoxSides::of(self.styles.get(atom.node), available)
+    }
+
+    fn atom_width(&self, atom: Atom) -> f32 {
+        atom.width + self.atom_sides(atom).horizontal()
+    }
+
+    /// How far an image on a line reaches above and below the baseline.
+    fn atom_extent(&self, atom: Atom) -> (f32, f32) {
+        let style = self.styles.get(atom.node);
+        let height = atom.height + self.atom_sides(atom).vertical();
+        match style.vertical_align {
+            VerticalPosition::Keyword(VerticalAlign::Middle) => {
+                let middle = style.font_size * 0.25;
+                (height / 2.0 + middle, (height / 2.0 - middle).max(0.0))
+            }
+            VerticalPosition::Keyword(VerticalAlign::Top | VerticalAlign::TextTop) => {
+                let top = style.font_size;
+                (top, (height - top).max(0.0))
+            }
+            VerticalPosition::Px(px) => (height + px, (-px).max(0.0)),
+            _ => (height, 0.0),
+        }
+    }
+
+    fn draw_atom(&mut self, atom: Atom, x: f32, baseline: f32) {
+        let sides = self.atom_sides(atom);
+        let (above, _) = self.atom_extent(atom);
+        let style = self.styles.get(atom.node);
+        self.draw_image_box(atom, style, &sides, x, baseline - above);
+    }
+
     /// Moves the word being collected onto the line, first wrapping when it does not fit.
     fn add_word(&mut self, block: &mut InlineBlock) {
         let Some(first) = block.word.first() else {
             return;
         };
-        let room = block.available - block.indent;
-        if block.runs[first.run].wraps
+        let wraps = block.runs[first.run].wraps;
+        if wraps
             && !block.line.is_empty()
-            && block.line_width + block.word_width > room
+            && block.line_width + block.word_width > block.available - block.indent
         {
             let end = block.line.last().map_or(0, |piece| piece.end);
             self.finish_line(block, None, end);
+        }
+        if block.line.is_empty() {
+            self.move_below_float(block, block.word_width);
         }
         block.line.append(&mut block.word);
         block.line_width += block.word_width;
@@ -956,7 +1659,8 @@ impl Layouter<'_> {
     fn finish_line(&mut self, block: &mut InlineBlock, empty_run: Option<usize>, position: usize) {
         // A collapsible space at the end of a line stays in the text but takes no room.
         while block.line.last().is_some_and(|piece| {
-            !block.runs[piece.run].keeps_spaces && &self.out.text[piece.start..piece.end] == " "
+            let run = &block.runs[piece.run];
+            run.atom.is_none() && !run.keeps_spaces && &self.out.text[piece.start..piece.end] == " "
         }) {
             block.line.pop();
         }
@@ -964,7 +1668,11 @@ impl Layouter<'_> {
         let mut stretches: Vec<Piece> = Vec::new();
         for piece in &block.line {
             match stretches.last_mut() {
-                Some(last) if last.run == piece.run && last.end == piece.start => {
+                Some(last)
+                    if last.run == piece.run
+                        && last.end == piece.start
+                        && block.runs[piece.run].atom.is_none() =>
+                {
                     last.end = piece.end;
                     last.width += piece.width;
                 }
@@ -973,6 +1681,7 @@ impl Layouter<'_> {
         }
         let line_width: f32 = stretches.iter().map(|piece| piece.width).sum();
         let free = (block.available - block.indent - line_width).max(0.0);
+        let line_left = block.left + block.indent;
         let mut x = block.left
             + block.indent
             + match block.align {
@@ -991,11 +1700,26 @@ impl Layouter<'_> {
             } else {
                 None
             });
+        let mut has_direct_text = stretches.is_empty();
         for index in measured {
             let run = &block.runs[index];
+            if let Some(atom) = run.atom {
+                let (atom_above, atom_below) = self.atom_extent(atom);
+                above = above.max(atom_above);
+                below = below.max(atom_below);
+                continue;
+            }
+            has_direct_text |= run.direct;
             let leading = (run.line_height - run.ascent - run.descent) / 2.0;
             above = above.max(run.ascent + leading + (-run.shift).max(0.0));
             below = below.max(run.descent + leading + run.shift.max(0.0));
+        }
+        // In quirks mode, only text right in the block makes a line as high as the block's font.
+        if has_direct_text || !block.quirks {
+            let strut = &block.strut;
+            let leading = (strut.line_height - strut.ascent - strut.descent) / 2.0;
+            above = above.max(strut.ascent + leading);
+            below = below.max(strut.descent + leading);
         }
         let top = self.cursor;
         let baseline = top + above;
@@ -1004,7 +1728,7 @@ impl Layouter<'_> {
         if let Some(marker) = self.marker.take() {
             self.out.items.push(Item {
                 kind: ItemKind::Marker,
-                x: (marker.right - marker.width - MARKER_GAP).max(0.0),
+                x: (marker.right - marker.width - marker.gap).max(0.0),
                 y: top,
                 width: marker.width,
                 height: bottom - top,
@@ -1020,7 +1744,9 @@ impl Layouter<'_> {
         let mut text_x = x;
         for piece in &stretches {
             let run = &block.runs[piece.run];
-            if run.background.alpha != 0 {
+            if let Some(atom) = run.atom {
+                self.draw_atom(atom, text_x, baseline);
+            } else if run.background.alpha != 0 {
                 self.out.items.push(Item {
                     kind: ItemKind::Rect,
                     x: text_x,
@@ -1038,8 +1764,14 @@ impl Layouter<'_> {
             text_x += piece.width;
         }
         let first_item = offset(self.out.items.len());
+        let mut text_items = 0;
         for piece in &stretches {
             let run = &block.runs[piece.run];
+            if run.atom.is_some() {
+                x += piece.width;
+                continue;
+            }
+            text_items += 1;
             self.out.items.push(Item {
                 kind: ItemKind::Text,
                 x,
@@ -1055,15 +1787,21 @@ impl Layouter<'_> {
             });
             x += piece.width;
         }
-        let (start, end) = match (stretches.first(), stretches.last()) {
+        let mut text_pieces = stretches
+            .iter()
+            .filter(|piece| block.runs[piece.run].atom.is_none());
+        let first_text = text_pieces.next();
+        let (start, end) = match (first_text, text_pieces.next_back().or(first_text)) {
             (Some(first), Some(last)) => (first.start, last.end),
             _ => (position, position),
         };
         self.out.lines.push(Line {
             top,
             bottom,
+            left: line_left,
+            right: x,
             first_item,
-            item_count: offset(stretches.len()),
+            item_count: text_items,
             start: offset(start),
             end: offset(end),
         });
@@ -1073,6 +1811,7 @@ impl Layouter<'_> {
         block.line.clear();
         block.line_width = 0.0;
         block.indent = 0.0;
+        self.update_room(block);
     }
 }
 
@@ -1081,13 +1820,76 @@ fn offset(position: usize) -> u32 {
     u32::try_from(position).unwrap_or(u32::MAX)
 }
 
-const MARKER_GAP: f32 = 8.0;
+/// How far a bullet stands from the text, in font sizes. Numbers get the width of a space instead.
+const MARKER_GAP: f32 = 0.5;
+/// See [`Layouter::add_float`].
+const MAX_ACTIVE_FLOATS: usize = 1000;
+
+/// The margins, borders and padding of a box.
+struct BoxSides {
+    margin_left: f32,
+    margin_right: f32,
+    margin_top: f32,
+    margin_bottom: f32,
+    border_left: f32,
+    border_right: f32,
+    border_top: f32,
+    border_bottom: f32,
+    padding_left: f32,
+    padding_right: f32,
+    padding_top: f32,
+    padding_bottom: f32,
+}
+
+impl BoxSides {
+    fn of(style: &ComputedStyle, whole: f32) -> Self {
+        let size = |value| resolve(value, whole).unwrap_or(0.0);
+        Self {
+            margin_left: size(style.margin.left),
+            margin_right: size(style.margin.right),
+            margin_top: size(style.margin.top),
+            margin_bottom: size(style.margin.bottom),
+            border_left: style.border_width.left,
+            border_right: style.border_width.right,
+            border_top: style.border_width.top,
+            border_bottom: style.border_width.bottom,
+            padding_left: size(style.padding.left),
+            padding_right: size(style.padding.right),
+            padding_top: size(style.padding.top),
+            padding_bottom: size(style.padding.bottom),
+        }
+    }
+
+    fn horizontal(&self) -> f32 {
+        self.margin_left
+            + self.margin_right
+            + self.border_left
+            + self.border_right
+            + self.padding_left
+            + self.padding_right
+    }
+
+    fn vertical(&self) -> f32 {
+        self.margin_top
+            + self.margin_bottom
+            + self.border_top
+            + self.border_bottom
+            + self.padding_top
+            + self.padding_bottom
+    }
+}
 
 /// The text of a block on its way into lines.
 struct InlineBlock {
     align: TextAlign,
+    /// The content box of the block.
+    limit_left: f32,
+    limit_right: f32,
+    /// The room for the line being built, around floats.
     left: f32,
     available: f32,
+    strut: Run,
+    quirks: bool,
     /// The indent of the line being built, which only the first line has.
     indent: f32,
     runs: Vec<Run>,

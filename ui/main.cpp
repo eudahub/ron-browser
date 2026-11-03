@@ -3,6 +3,7 @@
 
 #include <QApplication>
 #include <QCoreApplication>
+#include <QFileInfo>
 #include <QLineF>
 #include <QPixmap>
 #include <QSize>
@@ -32,7 +33,7 @@ int printPage(const QString &path, const std::string &encoding)
         std::cerr << path.toStdString() << ": " << decoded.error.toStdString() << "\n";
         return 1;
     }
-    const auto page = ron_browser::open_page(decoded.utf8);
+    const auto page = ron_browser::open_page(decoded.utf8, "");
     std::cout << "encoding: " << decoded.encoding << " (" << decoded.encodingSource.toStdString() << ")\n"
               << "title: " << std::string(page->title()) << "\n\n"
               << std::string(page->plain_text()) << "\n";
@@ -62,7 +63,7 @@ int shootPage(const QString &path, const std::string &encoding, const QString &o
     PageView view;
     view.resize(size);
     view.show();
-    view.setPage(decoded.utf8);
+    view.setPage(decoded.utf8, QFileInfo(path).absolutePath());
     return view.grabWholePage(size).save(out) ? 0 : 1;
 }
 
