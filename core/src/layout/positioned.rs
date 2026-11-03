@@ -41,6 +41,8 @@ pub struct PaintLayer {
     /// Whether it draws above what is not positioned, or below if it asks for a negative `z-index`.
     positioned: bool,
     z_index: i32,
+    /// How much of what it holds shows. Images only show or do not, as the toolkit is not told.
+    opacity: f32,
     /// The item that holds the box that this range is cut off by, which moves along with the rest.
     clip: Option<u32>,
     /// The layer that this one is within.
@@ -132,6 +134,16 @@ impl Layout {
         let mut rank = None;
         while let Some(current) = layer {
             if current.end > at {
+                if current.opacity <= 0.0 {
+                    return None;
+                }
+                if current.opacity < 1.0 {
+                    let alpha = f32::from(item.color.alpha) * current.opacity;
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    {
+                        item.color.alpha = alpha.round() as u8;
+                    }
+                }
                 if rank.is_none() && current.positioned {
                     rank = Some((if current.z_index < 0 { -1 } else { 1 }, current.z_index));
                 }
@@ -234,7 +246,7 @@ impl Layouter<'_> {
     /// Notes where a box starts, if something is to be done with what it holds when it ends.
     pub(super) fn start_span(&mut self, style: &ComputedStyle) -> Option<Box<FrameSpan>> {
         let clips = cuts_off(style);
-        if !clips && !goes_above(style) {
+        if !clips && !goes_above(style) && style.opacity >= 1.0 {
             return None;
         }
         let mut span = Box::new(FrameSpan {
@@ -279,6 +291,7 @@ impl Layouter<'_> {
             end,
             positioned: goes_above(style),
             z_index: style.z_index.unwrap_or(0),
+            opacity: style.opacity,
             clip: span
                 .clip_marker
                 .map(|marker| u32::try_from(marker).unwrap_or(u32::MAX)),

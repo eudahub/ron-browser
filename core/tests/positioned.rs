@@ -284,6 +284,72 @@ fn what_is_cut_off_cannot_be_clicked() {
 }
 
 #[test]
+fn what_is_hidden_draws_nothing_and_keeps_its_place() {
+    let layout = show(
+        "<div style='visibility:hidden;background:red;border:1px solid blue;height:50px'>a</div><p>after</p>",
+    );
+    assert!(filled(&layout).is_empty());
+    assert_eq!(drawn_text(&layout), ["after"]);
+    assert_eq!(text(&layout, "after").y, 52.0);
+    // The usual backdrop of a menu, which covers all once it shows.
+    let backdrop = show(
+        "<div style='position:fixed;inset:0;background:black;visibility:hidden'></div><p>seen</p>",
+    );
+    assert!(filled(&backdrop).is_empty());
+    let image = show("<img src=a.png style='visibility:hidden'><p>after</p>");
+    assert!(
+        image
+            .visible_items(-1e6, 1e6)
+            .iter()
+            .all(|visible| visible.item.kind != ItemKind::Image)
+    );
+    assert!(text(&image, "after").y >= 20.0);
+    // What it holds can show again.
+    let inside = show(
+        "<div style='visibility:hidden;background:red'><p style='visibility:visible'>shown</p></div>",
+    );
+    assert!(filled(&inside).is_empty());
+    assert_eq!(drawn_text(&inside), ["shown"]);
+}
+
+#[test]
+fn opacity_lets_through_what_is_behind() {
+    let layout = show("<div style='background:rgb(255,0,0);opacity:0.5'>a</div>");
+    let shape = filled(&layout)[0];
+    assert_eq!(shape.color.alpha, 128);
+    let text_item = layout
+        .visible_items(-1e6, 1e6)
+        .into_iter()
+        .map(|visible| visible.item)
+        .find(|item| item.kind == ItemKind::Text)
+        .unwrap();
+    assert_eq!(text_item.color.alpha, 128);
+    // All that is within it counts, also multiplied.
+    let nested = show(
+        "<div style='opacity:0.5'><div style='opacity:0.5;background:rgb(255,0,0)'>a</div></div>",
+    );
+    assert_eq!(filled(&nested)[0].color.alpha, 64);
+    let none = show(
+        "<div style='position:fixed;inset:0;background:black;opacity:0'><p>a</p><img src=a.png></div><p>seen</p>",
+    );
+    assert!(filled(&none).is_empty());
+    assert_eq!(drawn_text(&none), ["seen"]);
+    let percent = show("<div style='background:rgb(255,0,0);opacity:50%'>a</div>");
+    assert_eq!(filled(&percent)[0].color.alpha, 128);
+}
+
+#[test]
+fn inset_sets_all_sides() {
+    let layout = show(
+        "<div style='position:relative;width:200px;height:200px'>\
+         <div style='position:absolute;inset:10px 20px;background:red'></div></div>",
+    );
+    let shape = filled(&layout)[0];
+    assert_eq!((shape.x, shape.y), (20.0, 10.0));
+    assert_eq!((shape.width, shape.height), (160.0, 180.0));
+}
+
+#[test]
 fn links_go_with_a_box() {
     let layout =
         show("<div style='position:absolute;left:100px;top:100px'><a href=there>x</a></div>");

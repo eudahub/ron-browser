@@ -670,7 +670,8 @@ impl Layouter<'_> {
         self.margin = Margin::default();
         self.has_inline_content = false;
         self.lowest_float = 0.0;
-        let around = (style.background_color.alpha == 0)
+        let around = (style.background_color.alpha == 0
+            && style.visibility == ron::css::Visibility::Visible)
             .then(|| self.background_around(id))
             .flatten();
         let content_width = (width - BoxSides::of(style, 0.0).insets()).max(0.0);

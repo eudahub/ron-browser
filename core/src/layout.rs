@@ -1513,7 +1513,9 @@ impl Layouter<'_> {
             self.apply_clear(style.clear);
         }
 
-        let paints_background = self.canvas_node != Some(id);
+        // What is hidden keeps its place and what it holds can show, but it draws nothing itself.
+        let paints_background =
+            self.canvas_node != Some(id) && style.visibility == Visibility::Visible;
         let background_item = (paints_background && style.background_color.alpha != 0).then(|| {
             self.push_rect(x, 0.0, content_width + insets, 0.0, style.background_color);
             self.out.items.len() - 1
@@ -2025,6 +2027,9 @@ impl Layouter<'_> {
         x: f32,
         y: f32,
     ) {
+        if style.visibility != Visibility::Visible {
+            return;
+        }
         let left = x + sides.margin_left;
         let top = y + sides.margin_top;
         let outer_width = atom.width
@@ -2208,6 +2213,9 @@ impl Layouter<'_> {
     }
 
     fn push_borders(&mut self, style: &ComputedStyle, x: f32, top: f32, width: f32, bottom: f32) {
+        if style.visibility != Visibility::Visible {
+            return;
+        }
         let widths = style.border_width;
         let colors = style.border_color;
         let lines = style.border_style;
@@ -2293,6 +2301,9 @@ impl Layouter<'_> {
     }
 
     fn prepare_marker(&mut self, id: NodeId, style: &ComputedStyle, number: i64) {
+        if style.visibility != Visibility::Visible {
+            return;
+        }
         let Some(text) = marker_text(style.list_style_type, number) else {
             return;
         };
