@@ -166,13 +166,21 @@ pub struct Layout {
     pub area_shapes: Vec<AreaShape>,
     /// Elements that a link can lead to, with where their text starts.
     pub anchors: Vec<(NodeId, u32)>,
+    /// While a page is arriving, the first item that does not have its place yet. It and those
+    /// after it are not to be drawn.
+    pub unplaced_items: Option<u32>,
+    /// The same for [`Self::link_areas`].
+    pub unplaced_link_areas: Option<u32>,
 }
 
 impl Layout {
     /// The address of the link at a point of the page.
     #[must_use]
     pub fn link_at(&self, x: f32, y: f32) -> Option<&str> {
-        let area = self.link_areas.iter().rev().find(|area| {
+        let placed = self
+            .unplaced_link_areas
+            .map_or(self.link_areas.len(), |first| first as usize);
+        let area = self.link_areas[..placed].iter().rev().find(|area| {
             x >= area.x
                 && x < area.x + area.width
                 && y >= area.y
@@ -382,6 +390,8 @@ struct Layouter<'a> {
     has_inline_content: bool,
     /// Whether what separates it from the text before has been added.
     text_begun: bool,
+    /// Whether all of the document is there.
+    complete: bool,
     measurer: &'a mut dyn TextMeasurer,
     fonts: HashMap<usize, u32>,
     /// Asking the toolkit for each word is what would take the most time on a long page,
@@ -418,75 +428,216 @@ pub fn layout(
     width: f32,
     measurer: &mut dyn TextMeasurer,
 ) -> Layout {
+    let mut result = Layout::default();
+    let mut progress = LayoutProgress::default();
+    layout_more(
+        document,
+        styles,
+        images,
+        width,
+        measurer,
+        true,
+        &mut progress,
+        &mut result,
+    );
+    result.text.shrink_to_fit();
+    result.items.shrink_to_fit();
+    result.lines.shrink_to_fit();
+    result
+}
+
+/// Lays out what has come of a document since the last time, adding to `out`. With `complete`
+/// false, more is to come: it stops where it cannot know what comes next, which is before the last
+/// text and at elements that are still open, and what is waiting for the end of its block does not
+/// show until then. What is laid out before stays where it is, so a page only grows downwards.
+#[allow(clippy::too_many_arguments)]
+pub fn layout_more(
+    document: &Document,
+    styles: &Styles,
+    images: &ImageStore,
+    width: f32,
+    measurer: &mut dyn TextMeasurer,
+    complete: bool,
+    progress: &mut LayoutProgress,
+    out: &mut Layout,
+) {
+    let state = progress
+        .0
+        .take()
+        .unwrap_or_else(|| LayoutState::new(document, width));
     let canvas_node = canvas_node(document, styles);
     let mut layouter = Layouter {
         document,
         styles,
         images,
         canvas_node,
-        floats: Vec::new(),
-        lowest_float: 0.0,
-        in_float: 0,
-        has_inline_content: false,
-        text_begun: false,
+        complete,
         measurer,
+        out: std::mem::take(out),
+        floats: state.floats,
+        lowest_float: state.lowest_float,
+        in_float: state.in_float,
+        has_inline_content: state.has_inline_content,
+        text_begun: state.text_begun,
+        // These go by where a style is in memory, which can change as more styles come.
         fonts: HashMap::new(),
-        word_widths: HashMap::new(),
-        out: Layout::default(),
-        frames: vec![Frame {
-            node: document.root(),
-            x: 0.0,
-            width,
-            top: Some(0.0),
-            content_x: 0.0,
-            content_width: width,
-            bottom_inset: 0.0,
-            border_top: 0.0,
-            contains_floats: false,
-            lowest_float: 0.0,
-            float_return: None,
-            inline_return: None,
-            background_tile: None,
-            padding_top: 0.0,
-            margin_bottom: 0.0,
-            height: None,
-            min_height: 0.0,
-            max_height: None,
-            background_item: None,
-            list_number: 0,
-        }],
-        cursor: 0.0,
-        margin: Margin::default(),
-        runs: Vec::new(),
-        pending_space: None,
-        marker: None,
-        decorations: Vec::new(),
-        open_links: Vec::new(),
+        word_widths: state.word_widths,
+        frames: state.frames,
+        cursor: state.cursor,
+        margin: state.margin,
+        runs: state.runs,
+        pending_space: state.pending_space,
+        marker: state.marker,
+        decorations: state.decorations,
+        open_links: state.open_links,
+        // The maps of a page that is still arriving can grow.
         maps: None,
-        map_areas_left: MAX_MAP_AREAS,
-        inline_boxes: Vec::new(),
-        inline_box_depth: 0,
-        last_line_bottom: None,
-        last_baseline: None,
+        map_areas_left: state.map_areas_left,
+        inline_boxes: state.inline_boxes,
+        inline_box_depth: state.inline_box_depth,
+        last_line_bottom: state.last_line_bottom,
+        last_baseline: state.last_baseline,
     };
-    layouter.run();
-    let mut result = layouter.out;
-    result.width = result.width.max(width);
+    let position = layouter.run(state.position);
+    if complete {
+        layouter.out.unplaced_items = None;
+        layouter.out.unplaced_link_areas = None;
+    } else {
+        layouter.show_so_far();
+    }
+    *out = layouter.out;
+    progress.0 = Some(LayoutState {
+        position,
+        floats: layouter.floats,
+        lowest_float: layouter.lowest_float,
+        in_float: layouter.in_float,
+        has_inline_content: layouter.has_inline_content,
+        text_begun: layouter.text_begun,
+        word_widths: layouter.word_widths,
+        frames: layouter.frames,
+        cursor: layouter.cursor,
+        margin: layouter.margin,
+        runs: layouter.runs,
+        pending_space: layouter.pending_space,
+        marker: layouter.marker,
+        decorations: layouter.decorations,
+        open_links: layouter.open_links,
+        map_areas_left: layouter.map_areas_left,
+        inline_boxes: layouter.inline_boxes,
+        inline_box_depth: layouter.inline_box_depth,
+        last_line_bottom: layouter.last_line_bottom,
+        last_baseline: layouter.last_baseline,
+    });
+    out.width = out.width.max(width);
     if let Some(node) = canvas_node {
         let style = styles.get(node);
         let color = style.background_color;
-        result.canvas = (color.alpha != 0).then_some(color);
-        result.canvas_tile = background_tile(style, images, 0.0, 0.0, result.width, result.height)
+        out.canvas = (color.alpha != 0).then_some(color);
+        out.canvas_tile = background_tile(style, images, 0.0, 0.0, out.width, out.height)
             .map(|(tile, _, _, _, _)| tile);
     }
-    result.lines_in_order = result
+    out.lines_in_order = out
         .lines
         .windows(2)
         .all(|pair| pair[0].bottom <= pair[1].top);
-    result.text.shrink_to_fit();
-    result.items.shrink_to_fit();
-    result.lines.shrink_to_fit();
-    result
+}
+
+/// How far the layout of a document has come, for going on when more of it has arrived.
+#[derive(Default)]
+pub struct LayoutProgress(Option<LayoutState>);
+
+/// Where the walk through a document stands.
+#[derive(Clone, Copy)]
+enum Position {
+    /// Nothing is done yet.
+    Start,
+    /// This node is next.
+    At(NodeId),
+    /// This node is done. When `entered`, it was entered and has no children yet.
+    After {
+        node: NodeId,
+        entered: bool,
+    },
+    End,
+}
+
+/// What comes after a node that is done.
+enum Next {
+    Node(NodeId),
+    Wait(Position),
+    End,
+}
+
+/// All that a layout keeps between two parts of a document.
+struct LayoutState {
+    position: Position,
+    floats: Vec<FloatBox>,
+    lowest_float: f32,
+    in_float: usize,
+    has_inline_content: bool,
+    text_begun: bool,
+    word_widths: HashMap<u32, HashMap<Box<str>, f32>>,
+    frames: Vec<Frame>,
+    cursor: f32,
+    margin: Margin,
+    runs: Vec<Run>,
+    pending_space: Option<Run>,
+    marker: Option<Marker>,
+    decorations: Vec<(NodeId, u8)>,
+    open_links: Vec<(NodeId, u32)>,
+    map_areas_left: usize,
+    inline_boxes: Vec<InlineBox>,
+    inline_box_depth: usize,
+    last_line_bottom: Option<f32>,
+    last_baseline: Option<f32>,
+}
+
+impl LayoutState {
+    fn new(document: &Document, width: f32) -> Self {
+        Self {
+            position: Position::Start,
+            floats: Vec::new(),
+            lowest_float: 0.0,
+            in_float: 0,
+            has_inline_content: false,
+            text_begun: false,
+            word_widths: HashMap::new(),
+            frames: vec![Frame {
+                node: document.root(),
+                x: 0.0,
+                width,
+                top: Some(0.0),
+                content_x: 0.0,
+                content_width: width,
+                bottom_inset: 0.0,
+                border_top: 0.0,
+                contains_floats: false,
+                lowest_float: 0.0,
+                float_return: None,
+                inline_return: None,
+                background_tile: None,
+                padding_top: 0.0,
+                margin_bottom: 0.0,
+                height: None,
+                min_height: 0.0,
+                max_height: None,
+                background_item: None,
+                list_number: 0,
+            }],
+            cursor: 0.0,
+            margin: Margin::default(),
+            runs: Vec::new(),
+            pending_space: None,
+            marker: None,
+            decorations: Vec::new(),
+            open_links: Vec::new(),
+            map_areas_left: MAX_MAP_AREAS,
+            inline_boxes: Vec::new(),
+            inline_box_depth: 0,
+            last_line_bottom: None,
+            last_baseline: None,
+        }
+    }
 }
 
 /// The element that gives the whole page its background: the root element, or `<body>` when
@@ -614,10 +765,33 @@ fn is_block(display: Display) -> bool {
 }
 
 impl Layouter<'_> {
-    fn run(&mut self) {
+    /// Goes on from a position as far as what has come allows, and tells where it got to.
+    fn run(&mut self, position: Position) -> Position {
         let document = self.document;
-        let mut current = document.first_child(document.root());
+        let mut current = match position {
+            Position::Start => match document.first_child(document.root()) {
+                Some(first) => Some(first),
+                None if self.complete => None,
+                None => return Position::Start,
+            },
+            Position::At(id) => Some(id),
+            Position::After { node, entered } => match self.next_after(node, entered) {
+                Next::Node(next) => Some(next),
+                Next::Wait(position) => return position,
+                Next::End => None,
+            },
+            Position::End => return Position::End,
+        };
         while let Some(id) = current {
+            // The last text can still grow.
+            if document.kind(id) == NodeKind::Text
+                && document.next_sibling(id).is_none()
+                && document
+                    .parent(id)
+                    .is_some_and(|parent| self.is_open(parent))
+            {
+                return Position::At(id);
+            }
             let descend = match document.kind(id) {
                 NodeKind::Element => self.enter_element(id),
                 NodeKind::Text => {
@@ -631,30 +805,97 @@ impl Layouter<'_> {
             } else {
                 None
             };
-            current = child.or_else(|| self.leave_until_next(id, descend));
+            current = match child {
+                Some(child) => Some(child),
+                None => match self.next_after(id, descend) {
+                    Next::Node(next) => Some(next),
+                    Next::Wait(position) => return position,
+                    Next::End => None,
+                },
+            };
         }
         self.flush_inline();
         self.out.height = (self.cursor + self.margin.value().max(0.0)).max(self.lowest_float);
+        Position::End
+    }
+
+    fn is_open(&self, id: NodeId) -> bool {
+        !self.complete && (id == self.document.root() || self.document.is_open(id))
+    }
+
+    /// Makes what has been laid out so far ready to show, with more to come. This leaves all as it
+    /// was for going on, apart from what gets its final size later anyway.
+    fn show_so_far(&mut self) {
+        // Inside an inline block, positions are its own until a line takes it.
+        let open_box = self
+            .frames
+            .iter()
+            .position(|frame| frame.inline_return.is_some());
+        let around = open_box.and_then(|index| self.frames[index].inline_return.as_deref());
+        let (cursor, margin, lowest_float) = around
+            .map_or((self.cursor, self.margin, self.lowest_float), |saved| {
+                (saved.cursor, saved.margin, saved.lowest_float)
+            });
+        self.out.height = (cursor + margin.value().max(0.0)).max(lowest_float);
+        // Blocks that are still open reach as far as has come.
+        for frame in &self.frames[..open_box.unwrap_or(self.frames.len())] {
+            if let (Some(index), Some(top)) = (frame.background_item, frame.top) {
+                self.out.items[index].height = (cursor - top).max(0.0);
+            }
+        }
+        // What waits for a line to place it is not at its place yet.
+        let waiting = around.map_or(self.runs.as_slice(), |saved| saved.runs.as_slice());
+        let first_box = waiting
+            .iter()
+            .find_map(|run| run.atom.and_then(|atom| atom.inline_box))
+            .and_then(|number| self.inline_boxes.get(number as usize));
+        self.out.unplaced_items = around
+            .map(|saved| saved.items_start)
+            .into_iter()
+            .chain(first_box.map(|inline_box| inline_box.items.start))
+            .min()
+            .map(offset);
+        self.out.unplaced_link_areas = around
+            .map(|saved| saved.link_areas_start)
+            .into_iter()
+            .chain(first_box.map(|inline_box| inline_box.link_areas.start))
+            .min()
+            .map(offset);
     }
 
     /// Finds the next node once `id` is done, leaving the elements that end on the way.
     /// `entered` tells whether `id` itself was entered.
-    fn leave_until_next(&mut self, id: NodeId, entered: bool) -> Option<NodeId> {
+    fn next_after(&mut self, id: NodeId, entered: bool) -> Next {
         let document = self.document;
+        if entered {
+            // It had no children when it was entered, but they may have come since.
+            if let Some(child) = document.first_child(id) {
+                return Next::Node(child);
+            }
+            if self.is_open(id) {
+                return Next::Wait(Position::After { node: id, entered });
+            }
+            self.leave_element(id);
+        }
         let mut node = id;
-        let mut inside = entered;
         loop {
-            if inside {
-                self.leave_element(node);
-            }
             if let Some(sibling) = document.next_sibling(node) {
-                return Some(sibling);
+                return Next::Node(sibling);
             }
-            node = document.parent(node)?;
-            inside = true;
-            if node == document.root() {
-                return None;
+            let Some(parent) = document.parent(node) else {
+                return Next::End;
+            };
+            if self.is_open(parent) {
+                return Next::Wait(Position::After {
+                    node,
+                    entered: false,
+                });
             }
+            if parent == document.root() {
+                return Next::End;
+            }
+            self.leave_element(parent);
+            node = parent;
         }
     }
 

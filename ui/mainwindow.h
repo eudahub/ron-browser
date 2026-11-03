@@ -30,6 +30,8 @@ public:
     // Opens a file or an address, as if the user had typed it.
     void openPage(const QString &address);
     bool isLoading() const;
+    // For trying out pages that are still arriving: local files then take this long to come.
+    void setArrivalSeconds(int seconds);
     // For a screenshot, which must not wait for the delay after a resize.
     void layOutNow();
     PageView *pageView() const;
@@ -50,6 +52,8 @@ private:
     void showFetchedPage();
     void stopFetch();
     bool isFetching() const;
+    bool isWaitingForPage() const;
+    void stopArrivalOnly();
     void goBack();
     void goForward();
     // Shows the place the history is now at.
@@ -71,6 +75,7 @@ private:
     QLineEdit *addressBar;
     QTimer *fetchTimer;
     QString loadedAddress;
+    int arrivalSeconds = 0;
     std::optional<rust::Box<ron_browser::PageFetch>> pageFetch;
     // What to do when the page being read arrives: go to a place, adding to the history, or
     // return to how far down the page was, without adding.

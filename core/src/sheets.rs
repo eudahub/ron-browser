@@ -37,6 +37,8 @@ struct Slot {
 pub struct Sheets {
     slots: Vec<Slot>,
     next_id: u32,
+    /// How many sheets of the document have been taken in.
+    sources_seen: usize,
 }
 
 impl Sheets {
@@ -45,21 +47,31 @@ impl Sheets {
     #[must_use]
     pub fn of_document(document: &Document, page_address: Option<&str>) -> Self {
         let mut sheets = Self::default();
-        for source in document_sheet_sources(document) {
+        sheets.add_new_sources(document, page_address);
+        sheets
+    }
+
+    /// Takes in the sheets of a document that have come since the last time. Returns whether there
+    /// were any.
+    pub fn add_new_sources(&mut self, document: &Document, page_address: Option<&str>) -> bool {
+        let sources = document_sheet_sources(document);
+        let new = sources.len() > self.sources_seen;
+        for source in sources.into_iter().skip(self.sources_seen) {
+            self.sources_seen += 1;
             match source {
                 SheetSource::Inline { text, media } => {
                     let sheet = Stylesheet::parse(&text);
                     let imports = sheet.imports.clone();
-                    let position = sheets.push(Some(sheet), media, None, 0);
-                    sheets.add_imports(position, &imports, page_address.unwrap_or(""), 0);
+                    let position = self.push(Some(sheet), media, None, 0);
+                    self.add_imports(position, &imports, page_address.unwrap_or(""), 0);
                 }
                 SheetSource::Link { href, media } => {
                     let location = join_location(page_address.unwrap_or(""), &href);
-                    sheets.push(None, media, Some(location), 0);
+                    self.push(None, media, Some(location), 0);
                 }
             }
         }
-        sheets
+        new
     }
 
     fn push(

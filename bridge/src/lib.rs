@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use ron_browser_core::Viewport;
-use ron_browser_core::images::{ImageStore, LocalFiles};
+use ron_browser_core::images::{ImageStore, LocalFiles, NoResources, ResourceLoader};
 use ron_browser_core::layout::{self, ItemKind, TextMeasurer};
 use ron_browser_core::links::{self, Target};
 use ron_browser_core::selection::{Selection, Unit};
@@ -173,6 +173,13 @@ mod ffi {
         /// Whether a local page names style sheets that can only come over HTTPS.
         fn has_waiting_sheets(self: &Page) -> bool;
 
+        /// Starts a local page that arrives in pieces.
+        fn open_arriving_page(directory: &str, width: f32, height: f32) -> Box<Page>;
+        /// Adds the next piece of such a page, and lays out what can be known of it.
+        fn feed(self: &mut Page, piece: &str);
+        /// Ends such a page, and goes over all of it.
+        fn finish_arriving(self: &mut Page);
+
         type ImageFetch;
 
         /// Starts reading the images of a page that came from this address.
@@ -246,6 +253,8 @@ impl TextMeasurer for QtMeasurer {
 pub struct Page {
     page: page::Page,
     selection: Option<Selection>,
+    /// Where a local page that is arriving reads what it refers to.
+    files: Option<LocalFiles>,
 }
 
 fn packed(color: Color) -> u32 {
@@ -395,6 +404,24 @@ impl Page {
         self.page.has_waiting_sheets()
     }
 
+    fn feed(&mut self, piece: &str) {
+        let mut no_resources = NoResources;
+        let loader: &mut dyn ResourceLoader = match &mut self.files {
+            Some(files) => files,
+            None => &mut no_resources,
+        };
+        self.page.feed(piece, loader, &mut QtMeasurer);
+    }
+
+    fn finish_arriving(&mut self) {
+        let mut no_resources = NoResources;
+        let loader: &mut dyn ResourceLoader = match &mut self.files {
+            Some(files) => files,
+            None => &mut no_resources,
+        };
+        self.page.finish_arriving(loader, &mut QtMeasurer);
+    }
+
     fn start_image_fetch(&self, page_address: &str) -> Box<ImageFetch> {
         let requests = net::image_requests(page_address, &self.page.image_sources());
         Box::new(ImageFetch(net::ImageFetch::start(page_address, requests)))
@@ -510,6 +537,15 @@ fn open_fetched_page(utf8: String, address: &str, width: f32, height: f32) -> Bo
     Box::new(Page {
         page: page::Page::open_fetched(utf8, address, Viewport { width, height }),
         selection: None,
+        files: None,
+    })
+}
+
+fn open_arriving_page(directory: &str, width: f32, height: f32) -> Box<Page> {
+    Box::new(Page {
+        page: page::Page::open_arriving(Viewport { width, height }),
+        selection: None,
+        files: Some(LocalFiles::new(Path::new(directory))),
     })
 }
 
@@ -611,6 +647,7 @@ fn open_page(utf8: String, directory: &str, width: f32, height: f32) -> Box<Page
             Viewport { width, height },
         ),
         selection: None,
+        files: None,
     })
 }
 

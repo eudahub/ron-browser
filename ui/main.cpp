@@ -31,7 +31,7 @@ const float printHeight = 768;
 const int maxScreenshotWaitMs = 60000;
 
 const char usage[] =
-    "usage: ron-browser [--encoding NAME] [FILE or ADDRESS]\n"
+    "usage: ron-browser [--encoding NAME] [--slow-load SECONDS] [FILE or ADDRESS]\n"
     "       ron-browser [--encoding NAME] --print FILE\n"
     "       ron-browser [--encoding NAME] --screenshot PNG [--select X1 Y1 X2 Y2] [FILE or ADDRESS]\n"
     "       ron-browser [--encoding NAME] --page-shot PNG [--size WIDTHxHEIGHT] FILE\n"
@@ -89,6 +89,7 @@ int main(int argc, char *argv[])
     bool decode = false;
     QString pageShot;
     QSize pageShotSize(900, 700);
+    int slowLoadSeconds = 0;
     std::optional<QLineF> selection;
     for (int index = 1; index < argc; ++index) {
         const std::string argument = argv[index];
@@ -107,6 +108,8 @@ int main(int argc, char *argv[])
             if (parts.size() == 2) {
                 pageShotSize = QSize(parts[0].toInt(), parts[1].toInt());
             }
+        } else if (argument == "--slow-load" && index + 1 < argc) {
+            slowLoadSeconds = std::stoi(argv[++index]);
         } else if (argument == "--print") {
             print = true;
         } else if (argument == "--decode") {
@@ -137,6 +140,7 @@ int main(int argc, char *argv[])
         return shootPage(path, encoding, pageShot, pageShotSize);
     }
     MainWindow window(encoding);
+    window.setArrivalSeconds(slowLoadSeconds);
     window.show();
     if (!path.isEmpty()) {
         window.openPage(path);

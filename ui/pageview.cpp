@@ -43,6 +43,8 @@ void giveBackFreeMemory()
 #endif
 }
 
+// How often more of an arriving page comes in.
+const int arrivalPieceMs = 50;
 // A page shows after this long without the style sheets that have not come by then.
 const qint64 maxSheetWaitMs = 10000;
 
@@ -53,6 +55,9 @@ struct PageView::PageHolder {
     std::optional<rust::Box<ron_browser::ImageFetch>> imageFetch;
     std::optional<rust::Box<ron_browser::Page>> incoming;
     std::optional<rust::Box<ron_browser::SheetFetch>> sheetFetch;
+    // All of a page that is arriving, of which arrivedBytes have been given to it.
+    rust::String arrivingText;
+    bool arrivalEnded = false;
     // Each wraps the decoded pixels on the Rust side, without copying them.
     std::vector<std::optional<QImage>> images;
     std::vector<std::optional<QPixmap>> tiles;
@@ -92,8 +97,10 @@ struct PageView::PageHolder {
 
 PageView::PageView(QWidget *parent)
     : QAbstractScrollArea(parent), holder(std::make_unique<PageHolder>()), resizeTimer(new QTimer(this)),
-      dragScrollTimer(new QTimer(this)), imageTimer(new QTimer(this))
+      dragScrollTimer(new QTimer(this)), imageTimer(new QTimer(this)), arrivalTimer(new QTimer(this))
 {
+    arrivalTimer->setInterval(arrivalPieceMs);
+    connect(arrivalTimer, &QTimer::timeout, this, &PageView::feedNextPiece);
     // Each new image takes a new layout, so several arriving together should share one.
     imageTimer->setInterval(150);
     connect(imageTimer, &QTimer::timeout, this, &PageView::takeImages);
@@ -139,8 +146,109 @@ void PageView::clearPage()
     viewport()->update();
 }
 
+void PageView::startArriving(rust::String utf8, const QString &directory, const QString &address, int seconds)
+{
+    forgetPage();
+    const QByteArray path = directory.toUtf8();
+    const QSize size = viewport()->size();
+    holder->page = ron_browser::open_arriving_page(rust::Str(path.constData(), static_cast<size_t>(path.size())),
+                                                   static_cast<float>(size.width()), static_cast<float>(size.height()));
+    holder->arrivingText = std::move(utf8);
+    holder->arrivalEnded = false;
+    arrivedBytes = 0;
+    const size_t pieces = std::max<size_t>(static_cast<size_t>(std::max(seconds, 1)) * 1000 / arrivalPieceMs, 1);
+    bytesPerPiece = std::max<size_t>(holder->arrivingText.size() / pieces, 1);
+    incomingAddress = address;
+    verticalScrollBar()->setValue(0);
+    horizontalScrollBar()->setValue(0);
+    setHoveredLink(QString());
+    pressedLink.clear();
+    laidOutWidth = size.width();
+    updateScrollBars();
+    viewport()->update();
+    arrivalTimer->start();
+}
+
+bool PageView::isArriving() const
+{
+    return arrivalTimer->isActive();
+}
+
+void PageView::stopArriving()
+{
+    if (arrivalTimer->isActive()) {
+        arrivedBytes = holder->arrivingText.size();
+        finishArrival();
+    }
+}
+
+void PageView::feedNextPiece()
+{
+    if (!holder->page) {
+        arrivalTimer->stop();
+        return;
+    }
+    takeArrivingSheets();
+    if (holder->arrivalEnded) {
+        if (!holder->sheetFetch) {
+            arrivalTimer->stop();
+            emit arrivalFinished();
+        }
+        return;
+    }
+    const rust::String &text = holder->arrivingText;
+    size_t end = std::min(arrivedBytes + bytesPerPiece, text.size());
+    // A piece ends between characters, as all text in UTF-8 has to.
+    while (end < text.size() && (static_cast<unsigned char>(text.data()[end]) & 0xC0) == 0x80) {
+        ++end;
+    }
+    (*holder->page)->feed(rust::Str(text.data() + arrivedBytes, end - arrivedBytes));
+    arrivedBytes = end;
+    if (!holder->sheetFetch && (*holder->page)->has_waiting_sheets()) {
+        const QByteArray address = incomingAddress.toUtf8();
+        holder->sheetFetch = (*holder->page)->start_sheet_fetch(rust::Str(address.constData(), static_cast<size_t>(address.size())));
+    }
+    updateScrollBars();
+    viewport()->update();
+    if (arrivedBytes >= text.size()) {
+        finishArrival();
+    } else {
+        emit arrivalProgress(static_cast<int>(arrivedBytes * 100 / text.size()));
+    }
+}
+
+void PageView::takeArrivingSheets()
+{
+    if (!holder->sheetFetch) {
+        return;
+    }
+    const QByteArray address = incomingAddress.toUtf8();
+    if ((*holder->page)->take_sheets(**holder->sheetFetch, rust::Str(address.constData(), static_cast<size_t>(address.size())))) {
+        holder->sheetFetch.reset();
+        (*holder->page)->apply_sheets();
+        layOut();
+    }
+}
+
+void PageView::finishArrival()
+{
+    (*holder->page)->finish_arriving();
+    holder->arrivingText = rust::String();
+    holder->arrivalEnded = true;
+    updateScrollBars();
+    viewport()->update();
+    giveBackFreeMemory();
+    if (!holder->sheetFetch) {
+        arrivalTimer->stop();
+        emit arrivalFinished();
+    }
+}
+
 void PageView::forgetPage()
 {
+    arrivalTimer->stop();
+    holder->arrivingText = rust::String();
+    holder->sheetFetch.reset();
     imageTimer->stop();
     holder->imageFetch.reset();
     holder->forgetImages();

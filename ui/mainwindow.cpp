@@ -89,6 +89,23 @@ MainWindow::MainWindow(std::string forcedEncoding)
     connect(view, &PageView::linkHovered, this, &MainWindow::showLinkInStatus);
     connect(view, &PageView::backButtonPressed, this, &MainWindow::goBack);
     connect(view, &PageView::forwardButtonPressed, this, &MainWindow::goForward);
+    connect(view, &PageView::arrivalProgress, this, [this](int percent) {
+        pageStatus = tr("Loading %1%").arg(percent);
+        statusBar()->showMessage(pageStatus);
+        const QString title = view->pageTitle();
+        if (!title.isEmpty()) {
+            setWindowTitle(title);
+        }
+    });
+    connect(view, &PageView::arrivalFinished, this, [this] {
+        pageStatus = fetchedStatus;
+        statusBar()->showMessage(pageStatus);
+        const QString title = view->pageTitle();
+        if (!title.isEmpty()) {
+            setWindowTitle(title);
+        }
+        updateNavigation();
+    });
     updateNavigation();
 }
 
@@ -132,6 +149,15 @@ MainWindow::LocalLoad MainWindow::loadLocalFile(const QString &address, const QS
         return LocalLoad::Failed;
     }
     const QString status = tr("Encoding: %1 (%2)").arg(QString::fromStdString(decoded.encoding), decoded.encodingSource);
+    if (arrivalSeconds > 0) {
+        view->startArriving(std::move(decoded.utf8), QFileInfo(path).absolutePath(), address, arrivalSeconds);
+        loadedAddress = address;
+        setWindowTitle(QUrl(address).fileName());
+        fetchedStatus = status;
+        pageStatus = tr("Loading 0%");
+        statusBar()->showMessage(pageStatus);
+        return LocalLoad::Shown;
+    }
     if (!view->setLocalPage(std::move(decoded.utf8), QFileInfo(path).absolutePath(), address)) {
         fetchedAddress = address;
         fetchedStatus = status;
@@ -185,7 +211,11 @@ void MainWindow::startFetch(const QString &address, const QString &askingPage)
 
 void MainWindow::stopFetch()
 {
-    if (isFetching()) {
+    if (view->isArriving()) {
+        view->stopArriving();
+        updateNavigation();
+    }
+    if (isWaitingForPage()) {
         fetchTimer->stop();
         pageFetch.reset();
         view->dropIncomingPage();
@@ -197,7 +227,24 @@ void MainWindow::stopFetch()
 
 bool MainWindow::isFetching() const
 {
+    return isWaitingForPage() || view->isArriving();
+}
+
+void MainWindow::stopArrivalOnly()
+{
+    if (view->isArriving()) {
+        view->stopArriving();
+    }
+}
+
+bool MainWindow::isWaitingForPage() const
+{
     return pageFetch.has_value() || view->hasIncomingPage();
+}
+
+void MainWindow::setArrivalSeconds(int seconds)
+{
+    arrivalSeconds = seconds;
 }
 
 void MainWindow::checkFetch()
@@ -269,7 +316,8 @@ void MainWindow::showFetchedPage()
 
 void MainWindow::goBack()
 {
-    if (isFetching()) {
+    stopArrivalOnly();
+    if (isWaitingForPage()) {
         // What was being read never counted as a place, so Back only drops it.
         stopFetch();
         return;
@@ -377,10 +425,10 @@ void MainWindow::updateNavigation()
     reloadAction->setEnabled(!loadedAddress.isEmpty());
     stopAction->setEnabled(isFetching());
     // While something is being read, or after that failed, what the user typed stays to be fixed.
-    if (!isFetching() && pageStatus.isEmpty()) {
+    if (!isWaitingForPage() && pageStatus.isEmpty()) {
         return;
     }
-    if (!isFetching()) {
+    if (!isWaitingForPage()) {
         const QString fragment = asQString(history->current_fragment());
         addressBar->setText(fragment.isEmpty() ? loadedAddress : loadedAddress + u'#' + fragment);
     }

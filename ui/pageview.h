@@ -30,6 +30,12 @@ public:
     // Images load from `directory`, the one the page is in, and from nowhere else.
     void setPage(rust::String utf8, const QString &directory = QString());
     void clearPage();
+    // Shows a page from a file as it would come over a slow network, over this many seconds. It can
+    // be scrolled as far as it has come, and the range of the scroll bar only grows.
+    void startArriving(rust::String utf8, const QString &directory, const QString &address, int seconds);
+    bool isArriving() const;
+    // Ends it here, with what has come so far.
+    void stopArriving();
     // Opens a local page at this address. Returns whether it shows now; if it names style sheets
     // on the network, it becomes the incoming page instead.
     bool setLocalPage(rust::String utf8, const QString &directory, const QString &address);
@@ -64,6 +70,9 @@ signals:
     void linkHovered(const QString &address);
     // The user clicked a link. A drag that starts on one selects instead.
     void linkActivated(const QString &address);
+    // More of an arriving page is there, in percent of all of it.
+    void arrivalProgress(int percent);
+    void arrivalFinished();
     void backButtonPressed();
     void forwardButtonPressed();
 
@@ -79,6 +88,9 @@ protected:
 private:
     void takeImages();
     void forgetPage();
+    void feedNextPiece();
+    void takeArrivingSheets();
+    void finishArrival();
     void showIncoming();
     QString linkAt(QPointF viewPosition) const;
     void setHoveredLink(const QString &address);
@@ -101,6 +113,9 @@ private:
     QPointF lastDoubleClickPosition;
     QTimer *dragScrollTimer;
     QTimer *imageTimer;
+    QTimer *arrivalTimer;
+    size_t arrivedBytes = 0;
+    size_t bytesPerPiece = 0;
     QString incomingAddress;
     QElapsedTimer incomingWait;
     QString hoveredLink;

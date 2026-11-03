@@ -52,6 +52,9 @@ private slots:
     void whatFailsLeavesThePageAndTheTypedAddress();
     void aPageOnTheNetworkCannotOpenLocalFiles();
     void stoppingLeavesThePageAsItWas();
+    void aPageShowsWhileItArrives();
+    void scrollingStaysWhileAPageArrives();
+    void stoppingAnArrivalKeepsWhatCame();
     void aButtonOfTheMouseGoesBack();
 
 private:
@@ -359,6 +362,59 @@ void MainWindowTest::stoppingLeavesThePageAsItWas()
     QVERIFY(!action("Stop")->isEnabled());
     QCOMPARE(window->windowTitle(), QStringLiteral("First"));
     QVERIFY(!action("Back")->isEnabled());
+}
+
+void MainWindowTest::aPageShowsWhileItArrives()
+{
+    window->setArrivalSeconds(2);
+    window->openPage(directory.filePath("third.html"));
+    PageView *view = window->pageView();
+    QVERIFY(window->isLoading());
+    QVERIFY(action("Stop")->isEnabled());
+    // The range of the scroll bar only grows, and the window goes on in the meantime.
+    int range = 0;
+    int grew = 0;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        [&] {
+            const int now = view->verticalScrollBar()->maximum();
+            if (now < range) {
+                qFatal("the range went back from %d to %d", range, now);
+            }
+            grew += now > range ? 1 : 0;
+            range = now;
+            return !window->isLoading();
+        }(),
+        10000);
+    QVERIFY(grew > 1);
+    QCOMPARE(window->windowTitle(), QStringLiteral("Third"));
+    QVERIFY(!action("Stop")->isEnabled());
+    QVERIFY(window->statusBar()->currentMessage().contains(QStringLiteral("Encoding")));
+}
+
+void MainWindowTest::scrollingStaysWhileAPageArrives()
+{
+    window->setArrivalSeconds(2);
+    window->openPage(directory.filePath("third.html"));
+    PageView *view = window->pageView();
+    QTRY_VERIFY_WITH_TIMEOUT(view->verticalScrollBar()->maximum() >= 100, 5000);
+    view->setScrollY(100);
+    QTRY_VERIFY_WITH_TIMEOUT(!window->isLoading(), 10000);
+    QCOMPARE(view->scrollY(), 100);
+}
+
+void MainWindowTest::stoppingAnArrivalKeepsWhatCame()
+{
+    window->setArrivalSeconds(30);
+    window->openPage(directory.filePath("third.html"));
+    QTest::qWait(300);
+    action("Stop")->trigger();
+    QVERIFY(!window->isLoading());
+    QVERIFY(!action("Stop")->isEnabled());
+    // Back also leaves a page that is still arriving, for where the user was.
+    window->openPage(directory.filePath("second.html"));
+    QVERIFY(window->isLoading());
+    action("Back")->trigger();
+    QVERIFY(action("Forward")->isEnabled());
 }
 
 void MainWindowTest::aButtonOfTheMouseGoesBack()
