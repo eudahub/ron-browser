@@ -27,6 +27,8 @@ mod ffi {
     struct DrawItem {
         /// 0 for a filled rectangle, 1 for text, 2 for an image and 3 for a repeated image.
         kind: u8,
+        /// Its place among the items of the page, for asking about its text.
+        index: usize,
         /// The number of the image.
         image: u32,
         /// Where one copy of a repeated image starts.
@@ -41,6 +43,13 @@ mod ffi {
         color: u32,
         font: u32,
         decoration: u8,
+    }
+
+    /// The bytes of a file.
+    struct PageFile {
+        bytes: Vec<u8>,
+        /// What went wrong, or empty.
+        error: String,
     }
 
     /// Text decoded from a page.
@@ -100,12 +109,13 @@ mod ffi {
         type Page;
 
         /// Parses a page and computes its styles for a view of this size.
-        fn open_page(utf8: &str, directory: &str, width: f32, height: f32) -> Box<Page>;
+        fn open_page(utf8: String, directory: &str, width: f32, height: f32) -> Box<Page>;
         fn title(self: &Page) -> String;
         fn plain_text(self: &Page) -> String;
 
         fn lay_out(self: &mut Page, width: f32, height: f32);
-        fn items(self: &Page) -> &[DrawItem];
+        /// What to draw in this vertical range of the page, in drawing order.
+        fn visible_items(self: &Page, top: f32, bottom: f32) -> Vec<DrawItem>;
         fn item_text(self: &Page, index: usize) -> &str;
         fn layout_width(self: &Page) -> f32;
         fn layout_height(self: &Page) -> f32;
@@ -149,7 +159,7 @@ mod ffi {
         fn poll(self: &mut PageFetch) -> FetchedPage;
 
         /// Parses a page from this address on the network, without reading what it refers to.
-        fn open_fetched_page(utf8: &str, address: &str, width: f32, height: f32) -> Box<Page>;
+        fn open_fetched_page(utf8: String, address: &str, width: f32, height: f32) -> Box<Page>;
 
         type SheetFetch;
 
@@ -191,7 +201,9 @@ mod ffi {
         /// Finds the encoding of a page that does not declare one.
         fn detect_encoding(bytes: &[u8]) -> DetectedEncoding;
         /// The bytes as UTF-8, with what is invalid replaced.
-        fn decode_bytes(bytes: &[u8], encoding: &str) -> DecodedText;
+        fn decode_bytes(bytes: Vec<u8>, encoding: &str, skip_bom: bool) -> DecodedText;
+        /// Reads a whole file, unless it is too large to open.
+        fn read_page_file(path: &str) -> PageFile;
     }
 
     unsafe extern "C++" {
@@ -233,7 +245,6 @@ impl TextMeasurer for QtMeasurer {
 /// The engine's page, in a type of this crate as the bridge requires.
 pub struct Page {
     page: page::Page,
-    items: Vec<ffi::DrawItem>,
     selection: Option<Selection>,
 }
 
@@ -255,15 +266,21 @@ impl Page {
 
     fn lay_out(&mut self, width: f32, height: f32) {
         self.page.lay_out(width, height, &mut QtMeasurer);
+    }
+
+    fn visible_items(&self, top: f32, bottom: f32) -> Vec<ffi::DrawItem> {
         let layout = self.page.layout();
-        self.items = layout
+        layout
             .items
             .iter()
-            .map(|item| {
+            .enumerate()
+            .filter(|(_, item)| item.y <= bottom && item.y + item.height >= top)
+            .map(|(index, item)| {
                 let tile = (item.kind == ItemKind::Tile)
                     .then(|| layout.tiles.get(item.start as usize))
                     .flatten();
                 ffi::DrawItem {
+                    index,
                     kind: match item.kind {
                         ItemKind::Rect => 0,
                         ItemKind::Text | ItemKind::Marker => 1,
@@ -283,11 +300,7 @@ impl Page {
                     decoration: item.decoration,
                 }
             })
-            .collect();
-    }
-
-    fn items(&self) -> &[ffi::DrawItem] {
-        &self.items
+            .collect()
     }
 
     fn item_text(&self, index: usize) -> &str {
@@ -419,6 +432,7 @@ impl Page {
     fn canvas_tile(&self) -> ffi::DrawItem {
         let tile = self.page.layout().canvas_tile;
         ffi::DrawItem {
+            index: 0,
             kind: if tile.is_some() { 3 } else { 0 },
             image: tile.map_or(0, |tile| tile.image),
             origin_x: tile.map_or(0.0, |tile| tile.origin_x),
@@ -492,10 +506,9 @@ impl PageFetch {
 /// The style sheets of a page being read, in a type of this crate as the bridge requires.
 pub struct SheetFetch(net::SheetFetch);
 
-fn open_fetched_page(utf8: &str, address: &str, width: f32, height: f32) -> Box<Page> {
+fn open_fetched_page(utf8: String, address: &str, width: f32, height: f32) -> Box<Page> {
     Box::new(Page {
         page: page::Page::open_fetched(utf8, address, Viewport { width, height }),
-        items: Vec::new(),
         selection: None,
     })
 }
@@ -588,7 +601,7 @@ fn local_path(address: &str) -> String {
         .unwrap_or_default()
 }
 
-fn open_page(utf8: &str, directory: &str, width: f32, height: f32) -> Box<Page> {
+fn open_page(utf8: String, directory: &str, width: f32, height: f32) -> Box<Page> {
     let mut files = LocalFiles::new(Path::new(directory));
     Box::new(Page {
         page: page::Page::open_sized(
@@ -597,7 +610,6 @@ fn open_page(utf8: &str, directory: &str, width: f32, height: f32) -> Box<Page> 
             ImageStore::default(),
             Viewport { width, height },
         ),
-        items: Vec::new(),
         selection: None,
     })
 }
@@ -622,8 +634,33 @@ fn detect_encoding(bytes: &[u8]) -> ffi::DetectedEncoding {
     }
 }
 
-fn decode_bytes(bytes: &[u8], encoding: &str) -> ffi::DecodedText {
-    let decoded = charset::decode(bytes, encoding);
+/// Larger files are refused, so that opening one cannot exhaust memory.
+const MAX_PAGE_FILE_BYTES: u64 = 256 * 1024 * 1024;
+
+fn read_page_file(path: &str) -> ffi::PageFile {
+    let read = || -> std::io::Result<Vec<u8>> {
+        if std::fs::metadata(path)?.len() > MAX_PAGE_FILE_BYTES {
+            return Err(std::io::Error::other("The file is too large to open."));
+        }
+        std::fs::read(path)
+    };
+    match read() {
+        Ok(bytes) => ffi::PageFile {
+            bytes,
+            error: String::new(),
+        },
+        Err(error) => ffi::PageFile {
+            bytes: Vec::new(),
+            error: error.to_string(),
+        },
+    }
+}
+
+fn decode_bytes(mut bytes: Vec<u8>, encoding: &str, skip_bom: bool) -> ffi::DecodedText {
+    if skip_bom {
+        bytes.drain(..3.min(bytes.len()));
+    }
+    let decoded = charset::decode_owned(bytes, encoding);
     ffi::DecodedText {
         utf8: decoded.utf8,
         replaced: decoded.replaced,

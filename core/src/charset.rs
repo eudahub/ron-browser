@@ -63,6 +63,22 @@ pub fn decode(bytes: &[u8], encoding: &str) -> LossyText {
     }
 }
 
+/// Like [`decode`], for bytes that are not needed elsewhere. Text that is already right takes no
+/// copy, which on a large page saves as much memory as the page takes.
+#[must_use]
+pub fn decode_owned(bytes: Vec<u8>, encoding: &str) -> LossyText {
+    if encoding.eq_ignore_ascii_case("utf8") {
+        return match String::from_utf8(bytes) {
+            Ok(utf8) => LossyText {
+                utf8,
+                replaced: false,
+            },
+            Err(error) => decode(error.as_bytes(), encoding),
+        };
+    }
+    decode(&bytes, encoding)
+}
+
 /// Finds `charset=...` in the first bytes of a page, as in
 /// `<meta charset="utf-8">` or `<meta http-equiv=content-type content="...; charset=utf-8">`.
 /// The declaration must be in a `<meta>` tag.

@@ -19,6 +19,7 @@
 #include <iostream>
 #include <optional>
 #include <string>
+#include <utility>
 
 namespace {
 
@@ -38,12 +39,12 @@ const char usage[] =
 
 int printPage(const QString &path, const std::string &encoding)
 {
-    const DecodedPage decoded = loadPage(path, encoding);
+    DecodedPage decoded = loadPage(path, encoding);
     if (!decoded.error.isEmpty()) {
         std::cerr << path.toStdString() << ": " << decoded.error.toStdString() << "\n";
         return 1;
     }
-    const auto page = ron_browser::open_page(decoded.utf8, "", printWidth, printHeight);
+    const auto page = ron_browser::open_page(std::move(decoded.utf8), "", printWidth, printHeight);
     std::cout << "encoding: " << decoded.encoding << " (" << decoded.encodingSource.toStdString() << ")\n"
               << "title: " << std::string(page->title()) << "\n\n"
               << std::string(page->plain_text()) << "\n";
@@ -65,7 +66,7 @@ int decodePage(const QString &path, const std::string &encoding)
 // A shot of the whole page alone, without the window around it, for comparing with others.
 int shootPage(const QString &path, const std::string &encoding, const QString &out, QSize size)
 {
-    const DecodedPage decoded = loadPage(path, encoding);
+    DecodedPage decoded = loadPage(path, encoding);
     if (!decoded.error.isEmpty()) {
         std::cerr << path.toStdString() << ": " << decoded.error.toStdString() << "\n";
         return 1;
@@ -73,7 +74,7 @@ int shootPage(const QString &path, const std::string &encoding, const QString &o
     PageView view;
     view.resize(size);
     view.show();
-    view.setPage(decoded.utf8, QFileInfo(path).absolutePath());
+    view.setPage(std::move(decoded.utf8), QFileInfo(path).absolutePath());
     return view.grabWholePage(size).save(out) ? 0 : 1;
 }
 

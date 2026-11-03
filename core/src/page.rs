@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use ron::css::{Styles, Viewport, compute_styles};
-use ron::html::{Document, NodeId, NodeKind, Tag, parse};
+use ron::html::{Document, NodeId, NodeKind, Tag, parse_owned};
 
 use crate::images::{DecodedImage, ImageStore, NoResources, ResourceLoader};
 use crate::layout::{FontSpec, Layout, TextMeasurer, layout};
@@ -53,12 +53,12 @@ impl Page {
     /// Like [`Self::open_with`], for a view of this size. Styles depend on it, so a later layout at
     /// this size need not compute them again, which takes long on a large page.
     pub fn open_sized(
-        utf8: &str,
+        utf8: impl Into<String>,
         loader: &mut dyn ResourceLoader,
         images: ImageStore,
         viewport: Viewport,
     ) -> Self {
-        let document = parse(utf8);
+        let document = parse_owned(utf8.into());
         let mut waiting_sheets = Vec::new();
         let mut sheets = Sheets::of_document(&document, None);
         // Each round brings what the sheets of the last one import, which has a limit.
@@ -94,8 +94,8 @@ impl Page {
     /// [`Self::sheet_requests`] and [`Self::image_sources`], so styles wait for
     /// [`Self::apply_sheets`].
     #[must_use]
-    pub fn open_fetched(utf8: &str, address: &str, viewport: Viewport) -> Self {
-        let document = parse(utf8);
+    pub fn open_fetched(utf8: impl Into<String>, address: &str, viewport: Viewport) -> Self {
+        let document = parse_owned(utf8.into());
         let sheets = Sheets::of_document(&document, Some(address));
         let styles = Styles::unstyled(&document);
         Self {

@@ -126,13 +126,13 @@ bool MainWindow::isLoading() const
 
 MainWindow::LocalLoad MainWindow::loadLocalFile(const QString &address, const QString &path)
 {
-    const DecodedPage decoded = loadPage(path, forcedEncoding);
+    DecodedPage decoded = loadPage(path, forcedEncoding);
     if (!decoded.error.isEmpty()) {
         statusBar()->showMessage(tr("Cannot open %1: %2").arg(path, decoded.error));
         return LocalLoad::Failed;
     }
     const QString status = tr("Encoding: %1 (%2)").arg(QString::fromStdString(decoded.encoding), decoded.encodingSource);
-    if (!view->setLocalPage(decoded.utf8, QFileInfo(path).absolutePath(), address)) {
+    if (!view->setLocalPage(std::move(decoded.utf8), QFileInfo(path).absolutePath(), address)) {
         fetchedAddress = address;
         fetchedStatus = status;
         fetchTimer->start();
@@ -213,7 +213,7 @@ void MainWindow::checkFetch()
         fetchTimer->stop();
         return;
     }
-    const ron_browser::FetchedPage fetched = (*pageFetch)->poll();
+    ron_browser::FetchedPage fetched = (*pageFetch)->poll();
     if (!fetched.done) {
         return;
     }
@@ -234,9 +234,8 @@ void MainWindow::checkFetch()
         updateNavigation();
         return;
     }
-    const std::string_view bytes(reinterpret_cast<const char *>(fetched.bytes.data()), fetched.bytes.size());
-    const DecodedPage decoded = decodeFetchedPage(bytes, std::string(fetched.charset));
-    view->prepareFetchedPage(decoded.utf8, address);
+    DecodedPage decoded = decodeFetchedPage(std::move(fetched.bytes), std::string(fetched.charset));
+    view->prepareFetchedPage(std::move(decoded.utf8), address);
     fetchedAddress = address;
     const QString security = QUrl(address).scheme() == QStringLiteral("https") ? QString() : tr("Not secure. ");
     fetchedStatus = security + tr("Encoding: %1 (%2)").arg(QString::fromStdString(decoded.encoding), decoded.encodingSource);

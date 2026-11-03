@@ -8,11 +8,10 @@
 
 #include <algorithm>
 #include <cctype>
+#include <string_view>
+#include <utility>
 
 namespace {
-
-// Larger files are refused, so that opening one cannot exhaust memory.
-const qint64 maxPageBytes = 256 * 1024 * 1024;
 
 // Maps a web charset label to a cpg-rs name; empty when cpg-rs does not have it.
 std::string codepageForLabel(std::string label)
@@ -32,49 +31,50 @@ std::string codepageForLabel(std::string label)
     return ron_browser::is_known_encoding(label) ? label : std::string();
 }
 
-rust::Slice<const uint8_t> asSlice(std::string_view bytes)
+rust::Slice<const uint8_t> asSlice(const rust::Vec<std::uint8_t> &bytes)
 {
-    return {reinterpret_cast<const uint8_t *>(bytes.data()), bytes.size()};
+    return {bytes.data(), bytes.size()};
 }
 
-void decode(DecodedPage &page, std::string_view bytes, const std::string &encoding)
+void decode(DecodedPage &page, rust::Vec<std::uint8_t> bytes, const std::string &encoding, bool skipBom = false)
 {
     page.encoding = encoding;
-    const auto decoded = ron_browser::decode_bytes(asSlice(bytes), encoding);
+    auto decoded = ron_browser::decode_bytes(std::move(bytes), encoding, skipBom);
     if (decoded.replaced) {
         page.encodingSource += QObject::tr(", with invalid bytes replaced");
     }
-    page.utf8 = std::string(decoded.utf8);
+    page.utf8 = std::move(decoded.utf8);
 }
 
-void decodeContent(DecodedPage &page, std::string_view bytes, const std::string &forcedEncoding,
+void decodeContent(DecodedPage &page, rust::Vec<std::uint8_t> bytes, const std::string &forcedEncoding,
                    const std::string &serverCharset)
 {
+    const std::string_view view(reinterpret_cast<const char *>(bytes.data()), bytes.size());
     const std::string fromServer = codepageForLabel(serverCharset);
     if (!forcedEncoding.empty() && !ron_browser::is_known_encoding(forcedEncoding)) {
         page.error = QObject::tr("Unknown encoding: %1").arg(QString::fromStdString(forcedEncoding));
     } else if (!forcedEncoding.empty()) {
         page.encodingSource = QObject::tr("chosen");
-        decode(page, bytes, forcedEncoding);
-    } else if (bytes.starts_with("\xEF\xBB\xBF")) {
+        decode(page, std::move(bytes), forcedEncoding);
+    } else if (view.starts_with("\xEF\xBB\xBF")) {
         page.encodingSource = QObject::tr("byte order mark");
-        decode(page, bytes.substr(3), "utf8");
+        decode(page, std::move(bytes), "utf8", true);
     } else if (!fromServer.empty()) {
         page.encodingSource = QObject::tr("from the server");
-        decode(page, bytes, fromServer);
+        decode(page, std::move(bytes), fromServer);
     } else {
         const std::string declared = codepageForLabel(std::string(ron_browser::declared_charset(asSlice(bytes))));
         if (!declared.empty()) {
             page.encodingSource = QObject::tr("declared");
-            decode(page, bytes, declared);
+            decode(page, std::move(bytes), declared);
         } else if (ron_browser::is_utf8(asSlice(bytes))) {
             // Text in another encoding is very rarely valid UTF-8 by chance.
             page.encodingSource = QObject::tr("valid as such");
-            decode(page, bytes, "utf8");
+            decode(page, std::move(bytes), "utf8");
         } else {
             const auto detection = ron_browser::detect_encoding(asSlice(bytes));
             page.encodingSource = detection.certain ? QObject::tr("detected") : QObject::tr("detected, uncertain");
-            decode(page, bytes, std::string(detection.encoding));
+            decode(page, std::move(bytes), std::string(detection.encoding));
         }
     }
 }
@@ -84,24 +84,19 @@ void decodeContent(DecodedPage &page, std::string_view bytes, const std::string 
 DecodedPage loadPage(const QString &path, const std::string &forcedEncoding)
 {
     DecodedPage page;
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        page.error = file.errorString();
+    const QByteArray pathBytes = path.toUtf8();
+    auto file = ron_browser::read_page_file(rust::Str(pathBytes.constData(), static_cast<size_t>(pathBytes.size())));
+    if (!file.error.empty()) {
+        page.error = QString::fromUtf8(file.error.data(), static_cast<qsizetype>(file.error.size()));
         return page;
     }
-    if (file.size() > maxPageBytes) {
-        page.error = QObject::tr("The file is too large to open.");
-        return page;
-    }
-    const QByteArray content = file.readAll();
-    decodeContent(page, std::string_view(content.constData(), static_cast<size_t>(content.size())), forcedEncoding,
-                  std::string());
+    decodeContent(page, std::move(file.bytes), forcedEncoding, std::string());
     return page;
 }
 
-DecodedPage decodeFetchedPage(std::string_view bytes, const std::string &charset)
+DecodedPage decodeFetchedPage(rust::Vec<std::uint8_t> bytes, const std::string &charset)
 {
     DecodedPage page;
-    decodeContent(page, bytes, std::string(), charset);
+    decodeContent(page, std::move(bytes), std::string(), charset);
     return page;
 }

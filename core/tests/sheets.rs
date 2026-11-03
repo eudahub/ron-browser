@@ -342,7 +342,7 @@ fn a_secure_page_reads_no_plain_sheets() {
     let server = serve();
     let address = "https://example.com/page.html";
     let mut page = Page::open_fetched(
-        &format!("<!DOCTYPE html><link rel=stylesheet href={server}/css/a.css><p>x"),
+        format!("<!DOCTYPE html><link rel=stylesheet href={server}/css/a.css><p>x"),
         address,
         Viewport::default(),
     );

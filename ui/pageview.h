@@ -28,13 +28,13 @@ public:
     ~PageView() override;
 
     // Images load from `directory`, the one the page is in, and from nowhere else.
-    void setPage(const std::string &utf8, const QString &directory = QString());
+    void setPage(rust::String utf8, const QString &directory = QString());
     void clearPage();
     // Opens a local page at this address. Returns whether it shows now; if it names style sheets
     // on the network, it becomes the incoming page instead.
-    bool setLocalPage(const std::string &utf8, const QString &directory, const QString &address);
+    bool setLocalPage(rust::String utf8, const QString &directory, const QString &address);
     // A page from the network waits unseen until its style sheets have come, or for long enough.
-    void prepareFetchedPage(const std::string &utf8, const QString &address);
+    void prepareFetchedPage(rust::String utf8, const QString &address);
     bool hasIncomingPage() const;
     bool incomingPageIsReady();
     void showIncomingPage();

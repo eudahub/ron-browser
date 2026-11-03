@@ -23,6 +23,10 @@
 #include <utility>
 #include <vector>
 
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
+
 namespace {
 
 const std::uint8_t underlineBit = 1;
@@ -30,6 +34,15 @@ const std::uint8_t overlineBit = 2;
 const std::uint8_t lineThroughBit = 4;
 // The longest side of a shot of a whole page; Qt cannot paint much beyond this anyway.
 const int maxShotSide = 32000;
+// Opening a page takes much more memory at once than it keeps. What is freed stays with the C
+// library for later, unless it is asked to give it back to the system.
+void giveBackFreeMemory()
+{
+#if defined(__GLIBC__)
+    malloc_trim(0);
+#endif
+}
+
 // A page shows after this long without the style sheets that have not come by then.
 const qint64 maxSheetWaitMs = 10000;
 
@@ -101,18 +114,19 @@ PageView::PageView(QWidget *parent)
 
 PageView::~PageView() = default;
 
-void PageView::setPage(const std::string &utf8, const QString &directory)
+void PageView::setPage(rust::String utf8, const QString &directory)
 {
     forgetPage();
     const QByteArray path = directory.toUtf8();
     const QSize size = viewport()->size();
-    holder->page = ron_browser::open_page(utf8, rust::Str(path.constData(), static_cast<size_t>(path.size())),
+    holder->page = ron_browser::open_page(std::move(utf8), rust::Str(path.constData(), static_cast<size_t>(path.size())),
                                           static_cast<float>(size.width()), static_cast<float>(size.height()));
     verticalScrollBar()->setValue(0);
     horizontalScrollBar()->setValue(0);
     setHoveredLink(QString());
     pressedLink.clear();
     layOut();
+    giveBackFreeMemory();
 }
 
 void PageView::clearPage()
@@ -132,11 +146,11 @@ void PageView::forgetPage()
     holder->forgetImages();
 }
 
-bool PageView::setLocalPage(const std::string &utf8, const QString &directory, const QString &address)
+bool PageView::setLocalPage(rust::String utf8, const QString &directory, const QString &address)
 {
     const QByteArray path = directory.toUtf8();
     const QSize size = viewport()->size();
-    holder->incoming = ron_browser::open_page(utf8, rust::Str(path.constData(), static_cast<size_t>(path.size())),
+    holder->incoming = ron_browser::open_page(std::move(utf8), rust::Str(path.constData(), static_cast<size_t>(path.size())),
                                               static_cast<float>(size.width()), static_cast<float>(size.height()));
     if (!(*holder->incoming)->has_waiting_sheets()) {
         showIncoming();
@@ -149,12 +163,12 @@ bool PageView::setLocalPage(const std::string &utf8, const QString &directory, c
     return false;
 }
 
-void PageView::prepareFetchedPage(const std::string &utf8, const QString &address)
+void PageView::prepareFetchedPage(rust::String utf8, const QString &address)
 {
     const QByteArray bytes = address.toUtf8();
     const rust::Str str(bytes.constData(), static_cast<size_t>(bytes.size()));
     const QSize size = viewport()->size();
-    holder->incoming = ron_browser::open_fetched_page(utf8, str, static_cast<float>(size.width()),
+    holder->incoming = ron_browser::open_fetched_page(std::move(utf8), str, static_cast<float>(size.width()),
                                                       static_cast<float>(size.height()));
     holder->sheetFetch = (*holder->incoming)->start_sheet_fetch(str);
     incomingAddress = address;
@@ -195,6 +209,7 @@ void PageView::showIncoming()
     setHoveredLink(QString());
     pressedLink.clear();
     layOut();
+    giveBackFreeMemory();
 }
 
 void PageView::dropIncomingPage()
@@ -541,13 +556,9 @@ void PageView::paintEvent(QPaintEvent *event)
     if (canvasTile.kind == 3) {
         drawTiles(canvasTile, visible);
     }
-    const auto items = page->items();
-    for (size_t index = 0; index < items.size(); ++index) {
-        const auto &item = items[index];
+    const auto items = page->visible_items(static_cast<float>(visible.top()), static_cast<float>(visible.bottom()));
+    for (const auto &item : items) {
         const QRectF box(item.x, item.y, item.width, item.height);
-        if (box.top() > visible.bottom() || box.bottom() < visible.top()) {
-            continue;
-        }
         const QColor color = QColor::fromRgba(item.color);
         if (item.kind == 0) {
             painter.fillRect(box, color);
@@ -561,7 +572,7 @@ void PageView::paintEvent(QPaintEvent *event)
             drawTiles(item, box);
             continue;
         }
-        const rust::Str text = page->item_text(index);
+        const rust::Str text = page->item_text(item.index);
         painter.setPen(color);
         const QFont &font = fontForId(item.font);
         const qreal scale = fontScaleForId(item.font);
