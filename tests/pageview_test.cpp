@@ -214,7 +214,7 @@ void PageViewTest::hoverTellsAboutLinks()
     QTest::mouseMove(view->viewport(), QPoint(10, 300));
     QTRY_COMPARE(hovered.size(), 2);
     QVERIFY(hovered.back().front().toString().isEmpty());
-    QCOMPARE(view->viewport()->cursor().shape(), Qt::IBeamCursor);
+    QCOMPARE(view->viewport()->cursor().shape(), Qt::ArrowCursor);
 }
 
 QTEST_MAIN(PageViewTest)

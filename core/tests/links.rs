@@ -229,6 +229,87 @@ fn a_link_ends_with_its_element_and_covers_what_wraps() {
 }
 
 #[test]
+fn parts_of_an_image_map_lead_where_they_go() {
+    let shown = page(
+        "<a href=around.htm><img src=a.png usemap=#m></a>\
+         <map name=m>\
+         <area shape=rect coords='0,0,10,10' href=first.htm>\
+         <area shape=rect coords='0,0,20,10' href=second.htm>\
+         <area shape=circle coords='30,10,5' href=round.htm>\
+         <area shape=poly coords='10,12 20,12 20,20' href=three.htm>\
+         <area shape=rect coords='0,12,4,20' nohref>\
+         </map>",
+        500.0,
+    );
+    let layout = shown.layout();
+    // The first that covers a point counts.
+    assert_eq!(layout.link_at(5.0, 5.0), Some("first.htm"));
+    assert_eq!(layout.link_at(15.0, 5.0), Some("second.htm"));
+    assert_eq!(layout.link_at(30.0, 10.0), Some("round.htm"));
+    // In the corner of the circle's box, but not in the circle.
+    assert_eq!(layout.link_at(26.0, 6.0), Some("around.htm"));
+    assert_eq!(layout.link_at(18.0, 15.0), Some("three.htm"));
+    assert_eq!(layout.link_at(12.0, 18.0), Some("around.htm"));
+    // A part with no address hides what is below it.
+    assert_eq!(layout.link_at(2.0, 15.0), None);
+}
+
+#[test]
+fn a_map_needs_its_name_and_stays_on_the_image() {
+    let other_name = page(
+        "<img src=a.png usemap=#other><map name=m><area shape=default href=x.htm></map>",
+        500.0,
+    );
+    assert_eq!(other_name.layout().link_at(5.0, 5.0), None);
+    let whole = page(
+        "<map name=m><area shape=default href=x.htm><area coords='0,0,500,500' href=y.htm></map>\
+         <img src=a.png usemap=#m>",
+        500.0,
+    );
+    assert_eq!(whole.layout().link_at(39.0, 19.0), Some("x.htm"));
+    assert_eq!(whole.layout().link_at(41.0, 5.0), None);
+    let cut_off = page(
+        "<map name=m><area coords='0,0,500,500' href=y.htm></map><img src=a.png usemap=#m>",
+        500.0,
+    );
+    assert_eq!(cut_off.layout().link_at(41.0, 5.0), None);
+}
+
+#[test]
+fn a_map_follows_its_image_past_borders_and_floats() {
+    let framed = page(
+        "<map name=m><area coords='0,0,10,10' href=x.htm></map>\
+         <img src=a.png usemap=#m border=5 style='float:right'>",
+        200.0,
+    );
+    // The image starts at 200 - 40 - 10 + 5 across and 5 down.
+    assert_eq!(framed.layout().link_at(156.0, 6.0), Some("x.htm"));
+    assert_eq!(framed.layout().link_at(153.0, 6.0), None);
+}
+
+#[test]
+fn broken_and_huge_maps_do_no_harm() {
+    let broken = page(
+        "<img src=a.png usemap=#m><map name=m>\
+         <area shape=circle coords='1'><area shape=poly coords='1,2'><area coords='x,y,z,w' href=a>\
+         <area shape=star coords='1,2,3,4' href=b><area shape=poly coords='5,5,5,5,5,5' href=c></map>",
+        500.0,
+    );
+    assert_eq!(broken.layout().link_at(30.0, 15.0), None);
+    let start = std::time::Instant::now();
+    let many = page(
+        &format!(
+            "<map name=m>{}</map>{}",
+            "<area coords='0,0,1,1' href=a>".repeat(5000),
+            "<img src=a.png usemap=#m>".repeat(500)
+        ),
+        500.0,
+    );
+    assert!(many.layout().link_areas.len() <= 100_000);
+    assert!(start.elapsed().as_secs() < 20);
+}
+
+#[test]
 fn a_fragment_leads_to_its_place() {
     let source = "<p>one</p><p id=second>two</p><p>three <a name=third>word</a></p>\
                   <div id=hidden style='display:none'>x</div><p id=last></p><p>four</p>\

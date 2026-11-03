@@ -76,7 +76,6 @@ PageView::PageView(QWidget *parent)
 {
     dragScrollTimer->setInterval(50);
     connect(dragScrollTimer, &QTimer::timeout, this, &PageView::scrollWhileDragging);
-    viewport()->setCursor(Qt::IBeamCursor);
     viewport()->setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
     // While the window is being resized, long pages are only laid out once it stops.
@@ -157,7 +156,7 @@ void PageView::setHoveredLink(const QString &address)
 {
     if (address != hoveredLink) {
         hoveredLink = address;
-        viewport()->setCursor(address.isEmpty() ? Qt::IBeamCursor : Qt::PointingHandCursor);
+        viewport()->setCursor(address.isEmpty() ? Qt::ArrowCursor : Qt::PointingHandCursor);
         emit linkHovered(address);
     }
 }

@@ -102,8 +102,45 @@ pub struct LinkArea {
     pub y: f32,
     pub width: f32,
     pub height: f32,
-    /// The number of the link in [`Layout::links`].
+    /// The number of the link in [`Layout::links`]. A number beyond them means a part of an image
+    /// map that leads nowhere, and keeps what is below it from being clicked.
     pub link: u32,
+    /// For a part of an image map that is not a rectangle, its number in [`Layout::area_shapes`].
+    pub shape: Option<u32>,
+}
+
+/// The shape of a part of an image map, in positions of the page.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AreaShape {
+    Circle { x: f32, y: f32, radius: f32 },
+    Polygon(Box<[(f32, f32)]>),
+}
+
+impl AreaShape {
+    fn contains(&self, x: f32, y: f32) -> bool {
+        match self {
+            Self::Circle {
+                x: center_x,
+                y: center_y,
+                radius,
+            } => (x - center_x).powi(2) + (y - center_y).powi(2) <= radius * radius,
+            Self::Polygon(corners) => {
+                // A ray to the right crosses the edge of a shape an odd number of times from inside.
+                let mut inside = false;
+                let mut previous = corners.last().copied().unwrap_or_default();
+                for &corner in corners {
+                    if (corner.1 > y) != (previous.1 > y)
+                        && x < (previous.0 - corner.0) * (y - corner.1) / (previous.1 - corner.1)
+                            + corner.0
+                    {
+                        inside = !inside;
+                    }
+                    previous = corner;
+                }
+                inside
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -125,6 +162,7 @@ pub struct Layout {
     pub links: Vec<Box<str>>,
     /// In drawing order, so the last under a point is the one on top.
     pub link_areas: Vec<LinkArea>,
+    pub area_shapes: Vec<AreaShape>,
     /// Elements that a link can lead to, with where their text starts.
     pub anchors: Vec<(NodeId, u32)>,
 }
@@ -134,7 +172,15 @@ impl Layout {
     #[must_use]
     pub fn link_at(&self, x: f32, y: f32) -> Option<&str> {
         let area = self.link_areas.iter().rev().find(|area| {
-            x >= area.x && x < area.x + area.width && y >= area.y && y < area.y + area.height
+            x >= area.x
+                && x < area.x + area.width
+                && y >= area.y
+                && y < area.y + area.height
+                && area.shape.is_none_or(|shape| {
+                    self.area_shapes
+                        .get(shape as usize)
+                        .is_some_and(|shape| shape.contains(x, y))
+                })
         })?;
         self.links.get(area.link as usize).map(AsRef::as_ref)
     }
@@ -318,6 +364,9 @@ struct Layouter<'a> {
     decorations: Vec<(NodeId, u8)>,
     /// Links in force, with their elements.
     open_links: Vec<(NodeId, u32)>,
+    maps: Option<HashMap<String, NodeId>>,
+    /// How many more parts of image maps a page gets, however often it uses a map.
+    map_areas_left: usize,
     last_line_bottom: Option<f32>,
 }
 
@@ -372,6 +421,8 @@ pub fn layout(
         marker: None,
         decorations: Vec::new(),
         open_links: Vec::new(),
+        maps: None,
+        map_areas_left: MAX_MAP_AREAS,
         last_line_bottom: None,
     };
     layouter.run();
@@ -619,8 +670,149 @@ impl Layouter<'_> {
                 width,
                 height,
                 link,
+                shape: None,
             });
         }
+    }
+
+    /// Finds the `<map>` of each name, the first time an image asks for one.
+    fn map_named(&mut self, name: &str) -> Option<NodeId> {
+        let document = self.document;
+        let maps = self.maps.get_or_insert_with(|| {
+            let mut maps = HashMap::new();
+            for id in document.descendants(document.root()) {
+                if document.kind(id) == NodeKind::Element
+                    && document.tag(id) == Tag::Other
+                    && document.name(id).eq_ignore_ascii_case("map")
+                    && let Some(name) = document
+                        .attributes(id)
+                        .find(|attribute| attribute.name.eq_ignore_ascii_case("name"))
+                {
+                    maps.entry(name.decoded_value().into_owned()).or_insert(id);
+                }
+            }
+            maps
+        });
+        maps.get(name).copied()
+    }
+
+    /// Makes the parts of an image's map lead where they go, over any link around the image. The
+    /// image's content starts at this point, as the positions in a map do.
+    fn add_image_map(&mut self, atom: Atom, left: f32, top: f32) {
+        let document = self.document;
+        let Some(name) = document
+            .attributes(atom.node)
+            .find(|attribute| attribute.name.eq_ignore_ascii_case("usemap"))
+            .map(|attribute| attribute.decoded_value().into_owned())
+        else {
+            return;
+        };
+        let Some(map) = self.map_named(name.strip_prefix('#').unwrap_or(&name)) else {
+            return;
+        };
+        let areas: Vec<NodeId> = document
+            .descendants(map)
+            .filter(|&id| document.kind(id) == NodeKind::Element && document.tag(id) == Tag::Area)
+            .collect();
+        // The first that covers a point counts, and the last added is looked at first.
+        for &area in areas.iter().rev() {
+            if self.map_areas_left == 0 {
+                return;
+            }
+            self.map_areas_left -= 1;
+            self.add_map_area(area, atom, left, top);
+        }
+    }
+
+    fn add_map_area(&mut self, area: NodeId, atom: Atom, left: f32, top: f32) {
+        let attribute = |name: &str| {
+            self.document
+                .attributes(area)
+                .find(|attribute| attribute.name.eq_ignore_ascii_case(name))
+                .map(|attribute| attribute.decoded_value().into_owned())
+        };
+        let shape =
+            attribute("shape").map_or_else(|| "rect".to_owned(), |s| s.to_ascii_lowercase());
+        let numbers: Vec<f32> = attribute("coords")
+            .unwrap_or_default()
+            .split(|c: char| c == ',' || c.is_ascii_whitespace())
+            .filter(|part| !part.is_empty())
+            .map(|part| part.parse().unwrap_or(0.0))
+            .collect();
+        let href = attribute("href");
+        let (mut from_x, mut from_y) = (left, top);
+        let (mut to_x, mut to_y) = (left + atom.width, top + atom.height);
+        let mut shape_number = None;
+        match shape.as_str() {
+            "default" => {}
+            "circle" | "circ" => {
+                let &[x, y, radius, ..] = numbers.as_slice() else {
+                    return;
+                };
+                let (x, y) = (left + x, top + y);
+                from_x = from_x.max(x - radius);
+                from_y = from_y.max(y - radius);
+                to_x = to_x.min(x + radius);
+                to_y = to_y.min(y + radius);
+                shape_number = Some(offset(self.out.area_shapes.len()));
+                self.out
+                    .area_shapes
+                    .push(AreaShape::Circle { x, y, radius });
+            }
+            "poly" | "polygon" => {
+                if numbers.len() < 6 {
+                    return;
+                }
+                let corners: Box<[(f32, f32)]> = numbers
+                    .chunks_exact(2)
+                    .map(|pair| (left + pair[0], top + pair[1]))
+                    .collect();
+                let bound =
+                    |values: fn(&(f32, f32)) -> f32, start: f32, pick: fn(f32, f32) -> f32| {
+                        corners.iter().map(values).fold(start, pick)
+                    };
+                let (low_x, low_y) = (
+                    bound(|c| c.0, f32::INFINITY, f32::min),
+                    bound(|c| c.1, f32::INFINITY, f32::min),
+                );
+                let (high_x, high_y) = (
+                    bound(|c| c.0, f32::NEG_INFINITY, f32::max),
+                    bound(|c| c.1, f32::NEG_INFINITY, f32::max),
+                );
+                from_x = from_x.max(low_x);
+                from_y = from_y.max(low_y);
+                to_x = to_x.min(high_x);
+                to_y = to_y.min(high_y);
+                shape_number = Some(offset(self.out.area_shapes.len()));
+                self.out.area_shapes.push(AreaShape::Polygon(corners));
+            }
+            "rect" | "rectangle" => {
+                let &[x1, y1, x2, y2, ..] = numbers.as_slice() else {
+                    return;
+                };
+                from_x = from_x.max(left + x1.min(x2));
+                from_y = from_y.max(top + y1.min(y2));
+                to_x = to_x.min(left + x1.max(x2));
+                to_y = to_y.min(top + y1.max(y2));
+            }
+            _ => return,
+        }
+        let link = match href {
+            Some(address) => {
+                let number = offset(self.out.links.len());
+                self.out.links.push(address.into());
+                number
+            }
+            None => u32::MAX,
+        };
+        self.out.link_areas.push(LinkArea {
+            x: from_x,
+            y: from_y,
+            width: (to_x - from_x).max(0.0),
+            height: (to_y - from_y).max(0.0),
+            link,
+            shape: shape_number,
+        });
     }
 
     fn current_link(&self) -> Option<u32> {
@@ -1073,8 +1265,8 @@ impl Layouter<'_> {
             top,
             (limit_left, limit_right),
         );
-        self.draw_image_box(atom, style, &sides, x, y);
         self.push_link_area(self.current_link(), x, y, total_width, total_height);
+        self.draw_image_box(atom, style, &sides, x, y);
         self.add_float(FloatBox {
             is_left,
             left: x,
@@ -1092,10 +1284,10 @@ impl Layouter<'_> {
         self.apply_clear(style.clear);
         self.commit_margins();
         let top = self.cursor - sides.margin_top;
-        self.draw_image_box(atom, style, &sides, left, top);
         let outer_width = atom.width + sides.horizontal();
         let outer_height = atom.height + sides.vertical();
         self.push_link_area(self.current_link(), left, top, outer_width, outer_height);
+        self.draw_image_box(atom, style, &sides, left, top);
         self.cursor =
             top + sides.margin_top + sides.vertical() - sides.margin_top - sides.margin_bottom
                 + atom.height;
@@ -1127,11 +1319,14 @@ impl Layouter<'_> {
             self.push_rect(left, top, outer_width, outer_height, style.background_color);
         }
         self.push_borders(style, left, top, outer_width, top + outer_height);
+        let content_left = left + sides.border_left + sides.padding_left;
+        let content_top = top + sides.border_top + sides.padding_top;
+        self.add_image_map(atom, content_left, content_top);
         if let Some(number) = atom.image {
             self.out.items.push(Item {
                 kind: ItemKind::Image,
-                x: left + sides.border_left + sides.padding_left,
-                y: top + sides.border_top + sides.padding_top,
+                x: content_left,
+                y: content_top,
                 width: atom.width,
                 height: atom.height,
                 baseline: 0.0,
@@ -1917,6 +2112,8 @@ fn offset(position: usize) -> u32 {
 const MARKER_GAP: f32 = 0.5;
 /// See [`Layouter::add_float`].
 const MAX_ACTIVE_FLOATS: usize = 1000;
+/// Each costs time on every move of the mouse.
+const MAX_MAP_AREAS: usize = 100_000;
 
 /// The margins, borders and padding of a box.
 struct BoxSides {
