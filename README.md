@@ -6,9 +6,10 @@ encoding. There is no layout, images, links or network yet.
 
 ## How it is split
 
-Everything that reads untrusted page content is Rust, in `src/`, without unsafe code except
-the generated bridge. The C++ part in `ui/` handles the window and gets page content only as
-plain text; Qt never interprets it as HTML.
+Everything that reads untrusted page content is Rust, in `core/`, with no unsafe code and no
+C++. `bridge/` connects it to C++ and holds the only unsafe code, which is generated. The C++
+part in `ui/` handles the window and gets page content only as plain text; Qt never interprets
+it as HTML.
 
 The exception for now is decoding: [cpg](https://github.com/eudahub/cpg), in C++, turns legacy
 encodings into UTF-8. It will move to Rust before the browser reads from a network.
@@ -32,4 +33,10 @@ build/ron-browser page.html
 build/ron-browser --print page.html            # the same as text, without a window
 build/ron-browser --screenshot out.png page.html
 build/ron-browser --encoding mazovia page.htm  # any encoding name cpg knows
+```
+
+The tests need no Qt:
+
+```sh
+cargo test
 ```

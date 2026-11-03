@@ -9,7 +9,7 @@
 #include <QPlainTextEdit>
 #include <QStatusBar>
 
-#include <ron-browser-core/src/bridge.rs.h>
+#include <ron-browser-bridge/src/lib.rs.h>
 
 MainWindow::MainWindow(std::string forcedEncoding)
     : view(new QPlainTextEdit(this)), forcedEncoding(std::move(forcedEncoding))

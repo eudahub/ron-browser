@@ -5,7 +5,7 @@
 #include <QCoreApplication>
 #include <QStringList>
 
-#include <ron-browser-core/src/bridge.rs.h>
+#include <ron-browser-bridge/src/lib.rs.h>
 
 #include <iostream>
 #include <string>

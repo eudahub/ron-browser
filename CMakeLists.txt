@@ -21,10 +21,10 @@ else()
     set(CARGO_PROFILE_FLAG "--release")
     set(CARGO_PROFILE_DIR "release")
 endif()
-set(CORE_LIBRARY "${CARGO_TARGET_DIR}/${CARGO_PROFILE_DIR}/libron_browser_core.a")
+set(CORE_LIBRARY "${CARGO_TARGET_DIR}/${CARGO_PROFILE_DIR}/libron_browser_bridge.a")
 add_custom_target(core_build ALL
     COMMAND "${CARGO}" build ${CARGO_PROFILE_FLAG}
-            --manifest-path "${CMAKE_SOURCE_DIR}/Cargo.toml"
+            --manifest-path "${CMAKE_SOURCE_DIR}/bridge/Cargo.toml"
             --target-dir "${CARGO_TARGET_DIR}"
     BYPRODUCTS "${CORE_LIBRARY}"
     COMMENT "Building the Rust part"

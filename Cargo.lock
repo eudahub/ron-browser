@@ -268,11 +268,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "ron-browser-core"
+name = "ron-browser-bridge"
 version = "0.1.0"
 dependencies = [
  "cxx",
  "cxx-build",
+ "ron-browser-core",
+]
+
+[[package]]
+name = "ron-browser-core"
+version = "0.1.0"
+dependencies = [
  "ron",
 ]
 

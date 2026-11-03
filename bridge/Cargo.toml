@@ -1,0 +1,19 @@
+[package]
+name = "ron-browser-bridge"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+cxx = "1.0"
+ron-browser-core = { path = "../core" }
+
+[build-dependencies]
+cxx-build = "1.0"
+
+# Only the generated bridge holds unsafe code; it allows that for itself.
+[lints.rust]
+unsafe_code = "deny"

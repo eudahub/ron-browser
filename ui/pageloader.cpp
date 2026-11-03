@@ -10,7 +10,7 @@
 #include <cpg/Language.h>
 #include <cpg/NgramModel.h>
 
-#include <ron-browser-core/src/bridge.rs.h>
+#include <ron-browser-bridge/src/lib.rs.h>
 
 #include <algorithm>
 #include <cctype>

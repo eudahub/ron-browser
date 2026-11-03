@@ -1,7 +1,20 @@
-//! What C++ can call. The generated glue is the only unsafe code in this crate.
+//! What C++ can call. The generated glue is the only unsafe code in the browser's Rust.
 
-use crate::charset;
-use crate::page::Page;
+use ron_browser_core::charset;
+use ron_browser_core::page;
+
+/// The engine's page, in a type of this crate as the bridge requires.
+pub struct Page(page::Page);
+
+impl Page {
+    fn title(&self) -> String {
+        self.0.title()
+    }
+
+    fn plain_text(&self) -> String {
+        self.0.plain_text()
+    }
+}
 
 #[allow(unsafe_code)]
 #[cxx::bridge(namespace = "ron_browser")]
@@ -23,7 +36,7 @@ mod ffi {
 }
 
 fn open_page(utf8: &str) -> Box<Page> {
-    Box::new(Page::open(utf8))
+    Box::new(Page(page::Page::open(utf8)))
 }
 
 fn declared_charset(bytes: &[u8]) -> String {
