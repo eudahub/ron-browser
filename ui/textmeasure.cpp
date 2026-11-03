@@ -16,6 +16,9 @@ namespace {
 
 // Pages cannot make this grow without end: further fonts reuse the last one.
 const size_t maxFonts = 4096;
+// See KnownFont::textWidth.
+const size_t maxPairs = 20000;
+const char16_t firstComplexLetter = 0x250;
 
 struct KnownFont {
     QFont font;
@@ -26,6 +29,54 @@ struct KnownFont {
     // How far the font reaches, at its real size. Small sizes in Qt are hinted, and so a little off.
     qreal ascent;
     qreal descent;
+    // Shaping each word takes most of the time of measuring, while pages use few pairs of letters.
+    // So a word counts as its letters, with what each pair adds to them. Ligatures of more than two
+    // letters come out up to about a pixel off.
+    std::unordered_map<char16_t, qreal> letters = {};
+    std::unordered_map<std::uint32_t, qreal> pairs = {};
+
+    qreal letterWidth(QChar letter)
+    {
+        const auto found = letters.find(letter.unicode());
+        if (found != letters.end()) {
+            return found->second;
+        }
+        const qreal width = metrics.horizontalAdvance(QString(letter));
+        letters.emplace(letter.unicode(), width);
+        return width;
+    }
+
+    qreal pairWidth(QChar first, QChar second)
+    {
+        const std::uint32_t key = (static_cast<std::uint32_t>(first.unicode()) << 16) | second.unicode();
+        const auto found = pairs.find(key);
+        if (found != pairs.end()) {
+            return found->second;
+        }
+        QString pair;
+        pair += first;
+        pair += second;
+        const qreal width = metrics.horizontalAdvance(pair);
+        pairs.emplace(key, width);
+        return width;
+    }
+
+    qreal textWidth(const QString &text)
+    {
+        // Scripts beyond the Latin ones can need all of a word to know its shapes. A page with very
+        // many pairs is measured the slow way, as otherwise it could fill memory.
+        const bool simple = pairs.size() < maxPairs && std::all_of(text.begin(), text.end(), [](QChar letter) {
+            return letter.unicode() < firstComplexLetter;
+        });
+        if (!simple) {
+            return metrics.horizontalAdvance(text);
+        }
+        qreal width = text.isEmpty() ? 0 : letterWidth(text.front());
+        for (qsizetype index = 1; index < text.size(); ++index) {
+            width += pairWidth(text[index - 1], text[index]) - letterWidth(text[index - 1]);
+        }
+        return width;
+    }
 };
 
 // The size that tells the true proportions of a font, large enough to leave out hinting.
@@ -120,8 +171,8 @@ std::uint32_t register_font(const FontSpec &spec)
 float text_width(std::uint32_t font, rust::Str text)
 {
     const QString string = QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size()));
-    const KnownFont &known = fonts()[font];
-    return static_cast<float>(known.metrics.horizontalAdvance(string) * known.scale);
+    KnownFont &known = fonts()[font];
+    return static_cast<float>(known.textWidth(string) * known.scale);
 }
 
 // Rounded up to whole pixels, as Firefox does, which gives the same line heights.

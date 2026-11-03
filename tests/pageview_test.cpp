@@ -1,9 +1,11 @@
 // The way from mouse events to the clipboard, which the Rust tests cannot reach. Positions are
 // found from the page itself, as text widths depend on the fonts of the system.
 #include "pageview.h"
+#include "textmeasure.h"
 
 #include <QApplication>
 #include <QClipboard>
+#include <QFontMetricsF>
 #include <QScrollBar>
 #include <QSignalSpy>
 #include <QStyleHints>
@@ -40,6 +42,7 @@ private slots:
     void listMarkersAreNotCopied();
     void selectionSurvivesScrollAndResize();
     void fontsHaveTheirExactSizes();
+    void wordsMeasuredByPairsCostAtMostAPixel();
     void clickOnALinkActivatesIt();
     void dragFromALinkSelectsInstead();
     void hoverTellsAboutLinks();
@@ -196,6 +199,21 @@ void PageViewTest::fontsHaveTheirExactSizes()
     QVERIFY(std::abs(ron_browser::text_width(font(12.8F), text) - whole * 0.8F) < 0.5F);
     QVERIFY(std::abs(ron_browser::text_width(font(13.0F), text) - whole * 13.0F / 16.0F) < 0.5F);
     QVERIFY(ron_browser::text_width(font(12.8F), text) < ron_browser::text_width(font(13.0F), text));
+}
+
+void PageViewTest::wordsMeasuredByPairsCostAtMostAPixel()
+{
+    const auto font = ron_browser::register_font(ron_browser::FontSpec{"serif", 16.0F, 400, false});
+    QFont qtFont = fontForId(font);
+    const QFontMetricsF metrics(qtFont);
+    for (const QString &word :
+         {QStringLiteral("a"), QStringLiteral("AVATAR"), QStringLiteral("office"), QStringLiteral("Zażółć"),
+          QStringLiteral("gęślą"), QStringLiteral("wave,"), QStringLiteral("Привет"), QStringLiteral("日本語"),
+          QString()}) {
+        const QByteArray bytes = word.toUtf8();
+        const float width = ron_browser::text_width(font, rust::Str(bytes.constData(), static_cast<size_t>(bytes.size())));
+        QVERIFY2(std::abs(width - metrics.horizontalAdvance(word)) <= 1.0F, qPrintable(word));
+    }
 }
 
 void PageViewTest::clickOnALinkActivatesIt()
