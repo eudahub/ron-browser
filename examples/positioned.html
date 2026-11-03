@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Positioned boxes</title>
+<style>
+  body { font-family: sans-serif; margin: 20px; max-width: 860px; }
+  h2 { font-size: 17px; margin: 26px 0 8px; }
+  .stage { position: relative; height: 150px; background: #eef1f6; border: 2px solid #889; }
+  .tag { position: absolute; background: #fff; border: 1px solid #889; padding: 2px 8px; }
+  .moved { position: relative; left: 40px; top: 10px; background: #ffe9c7; padding: 4px; }
+  .layer { position: absolute; width: 120px; height: 80px; padding: 6px; color: #fff; }
+  .only-for-readers { position: absolute; width: 1px; height: 1px; overflow: hidden; }
+  .shut { height: 44px; overflow: hidden; background: #e8f3e8; padding: 4px; }
+  .card { position: relative; background: #fff7e6; border: 1px solid #d9b679; padding: 12px 40px 12px 12px; }
+  .close { position: absolute; top: 4px; right: 8px; font-weight: bold; }
+  .badge { position: absolute; top: -8px; left: 12px; background: #c0392b; color: #fff; padding: 0 6px; }
+</style>
+</head>
+<body>
+<h1>Positioned boxes</h1>
+
+<h2>Absolute boxes in the corners and the middle of a relative one</h2>
+<div class="stage">
+  <div class="tag" style="left: 0; top: 0">top left</div>
+  <div class="tag" style="right: 0; top: 0">top right</div>
+  <div class="tag" style="left: 0; bottom: 0">bottom left</div>
+  <div class="tag" style="right: 0; bottom: 0">bottom right</div>
+  <div class="tag" style="left: 0; right: 0; top: 0; bottom: 0; margin: auto; width: 120px; height: 24px">in the middle</div>
+  <div class="tag" style="left: 25%; top: 40%">by percent</div>
+</div>
+
+<h2>A relative box moves, and leaves its place to the others</h2>
+<p>Text before it.</p>
+<div class="moved">This box is moved 40 pixels right and 10 down.</div>
+<p>Text after it stays where it would have been.</p>
+
+<h2>z-index: which goes above which, in spite of the order in the file</h2>
+<div class="stage">
+  <div class="layer" style="left: 20px; top: 20px; background: #c0392b; z-index: 3">z-index 3, written first</div>
+  <div class="layer" style="left: 90px; top: 40px; background: #2980b9; z-index: 1">z-index 1</div>
+  <div class="layer" style="left: 160px; top: 20px; background: #27ae60; z-index: 2">z-index 2</div>
+</div>
+
+<h2>Parts of a box: a label on the edge and a button in the corner</h2>
+<div class="card" style="margin-top: 14px">
+  <span class="badge">New</span>
+  <span class="close">x</span>
+  The label and the button are placed by the card, and take no room in what it holds.
+</div>
+
+<h2>Text for screen readers only, below this heading, does not show</h2>
+<h3 class="only-for-readers">If you can read this, it is wrong.</h3>
+<p>Only this text is to be seen here.</p>
+
+<h2>overflow: hidden cuts off what goes beyond the box</h2>
+<div class="shut">
+  This line can be seen.<br>
+  This one is cut through the middle by the end of the box, about half of it showing.<br>
+  This one cannot be seen at all.
+</div>
+</body>
+</html>

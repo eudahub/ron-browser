@@ -15,6 +15,7 @@ use ron::css::{
 };
 use ron::html::{NodeId, NodeKind, Tag};
 
+use super::positioned::is_out_of_flow;
 use super::{
     BoxSides, Frame, InlineReturn, Layouter, MAX_NESTED_LAYOUTS, Margin, is_replaced, resolve,
 };
@@ -67,6 +68,7 @@ struct LaidItem {
     bottom: f32,
     background_item: Option<usize>,
     background_tile: Option<usize>,
+    clip_marker: Option<usize>,
     items: Range<usize>,
     lines: Range<usize>,
     link_areas: Range<usize>,
@@ -269,7 +271,10 @@ impl Layouter<'_> {
                 }
                 NodeKind::Element => {
                     let style = self.styles.get(child);
-                    if style.display == Display::None || is_replaced(document, child) {
+                    if style.display == Display::None
+                        || is_replaced(document, child)
+                        || is_out_of_flow(style)
+                    {
                         continue;
                     }
                     let sides = BoxSides::of(style, 0.0).horizontal();
@@ -602,7 +607,7 @@ impl Layouter<'_> {
     }
 
     /// A box without anything of its own around what it holds, for what has no box as such.
-    fn open_plain_frame(&mut self, node: NodeId, x: f32, top: f32, width: f32) {
+    pub(super) fn open_plain_frame(&mut self, node: NodeId, x: f32, top: f32, width: f32) {
         self.frames.push(Frame {
             node,
             x,
@@ -618,6 +623,8 @@ impl Layouter<'_> {
             inline_return: None,
             cell_return: None,
             flex_return: None,
+            out_return: None,
+            span: None,
             background_tile: None,
             padding_top: 0.0,
             margin_bottom: 0.0,
@@ -715,13 +722,14 @@ impl Layouter<'_> {
             return false;
         }
         let insets = BoxSides::of(style, place.width).insets();
+        // Before its box opens, as all of that moves with it.
+        self.mark_item_start(&mut saved);
         self.open_frame_at(
             id,
             style,
             Some((place.width - insets).max(0.0)),
             Some((place.x, top)),
         );
-        self.mark_item_start(&mut saved);
         // Stretching to a height that is known already is known here too, so that what the item
         // holds can count on it, as a column within it that puts something at its bottom does.
         let sides = BoxSides::of(style, place.width);
@@ -786,6 +794,7 @@ impl Layouter<'_> {
             bottom,
             background_item: frame.background_item,
             background_tile: frame.background_tile,
+            clip_marker: frame.span.as_ref().and_then(|span| span.clip_marker),
             items: saved.items_start..self.out.items.len(),
             lines: saved.lines_start..self.out.lines.len(),
             link_areas: saved.link_areas_start..self.out.link_areas.len(),
@@ -1041,6 +1050,9 @@ impl Layouter<'_> {
             );
         }
         let bottom = top + height;
+        if let Some(index) = item.clip_marker {
+            self.out.items[index].height = height;
+        }
         if let Some(index) = item.background_item {
             let background = &mut self.out.items[index];
             background.y = top;

@@ -18,6 +18,7 @@ use ron::css::{
 };
 use ron::html::{NodeId, NodeKind};
 
+use super::positioned::is_out_of_flow;
 use super::{BoxSides, Color, Frame, InlineReturn, Layouter, MAX_NESTED_LAYOUTS, Margin, resolve};
 
 /// As in the HTML standard.
@@ -168,6 +169,7 @@ struct LaidCell {
     bottom: f32,
     background_item: Option<usize>,
     background_tile: Option<usize>,
+    clip_marker: Option<usize>,
     items: Range<usize>,
     lines: Range<usize>,
     link_areas: Range<usize>,
@@ -248,6 +250,9 @@ impl Layouter<'_> {
                 NodeKind::Element => {}
                 _ => continue,
             }
+            if is_out_of_flow(self.styles.get(child)) {
+                continue;
+            }
             match self.styles.get(child).display {
                 Display::None => {}
                 Display::TableCell => {
@@ -283,6 +288,9 @@ impl Layouter<'_> {
                 NodeKind::Text if !self.is_blank_text(child) => return None,
                 NodeKind::Element => {}
                 _ => continue,
+            }
+            if is_out_of_flow(self.styles.get(child)) {
+                continue;
             }
             match self.styles.get(child).display {
                 Display::None => {}
@@ -705,6 +713,7 @@ impl Layouter<'_> {
             bottom,
             background_item: frame.background_item,
             background_tile: frame.background_tile,
+            clip_marker: frame.span.as_ref().and_then(|span| span.clip_marker),
             items: saved.items_start..self.out.items.len(),
             lines: saved.lines_start..self.out.lines.len(),
             link_areas: saved.link_areas_start..self.out.link_areas.len(),
@@ -763,6 +772,9 @@ impl Layouter<'_> {
             );
         }
         let height = bottom - cell.top;
+        if let Some(index) = cell.clip_marker {
+            self.out.items[index].height = height;
+        }
         if let Some(index) = cell.background_item {
             self.out.items[index].height = height;
         }

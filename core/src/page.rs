@@ -320,7 +320,7 @@ impl Page {
             &self.document,
             &self.styles,
             &self.images,
-            self.viewport.width,
+            self.viewport,
             measurer,
         );
     }
@@ -385,7 +385,7 @@ impl Page {
             document,
             styles,
             &self.images,
-            self.viewport.width,
+            self.viewport,
             measurer,
             false,
             &mut arriving.layout,
@@ -570,7 +570,13 @@ impl Page {
             return;
         }
         self.unpack_source();
-        self.layout = layout(&self.document, &self.styles, &self.images, width, measurer);
+        self.layout = layout(
+            &self.document,
+            &self.styles,
+            &self.images,
+            viewport,
+            measurer,
+        );
     }
 
     /// How far down the page a link to `#fragment` leads, if there is such a place: an element
@@ -646,7 +652,10 @@ impl Page {
             self.tree(),
             self.current_styles(),
             &self.images,
-            0.0,
+            Viewport {
+                width: 0.0,
+                height: 0.0,
+            },
             &mut NoMeasurer,
         )
         .text

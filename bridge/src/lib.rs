@@ -43,6 +43,11 @@ mod ffi {
         color: u32,
         font: u32,
         decoration: u8,
+        /// What it is cut to when drawn. A negative width means that it is not.
+        clip_x: f32,
+        clip_y: f32,
+        clip_width: f32,
+        clip_height: f32,
     }
 
     /// The bytes of a file.
@@ -343,16 +348,19 @@ impl Page {
     fn visible_items(&self, top: f32, bottom: f32) -> Vec<ffi::DrawItem> {
         let layout = self.page.layout();
         layout
-            .items
-            .iter()
-            .enumerate()
-            .filter(|(_, item)| item.y <= bottom && item.y + item.height >= top)
-            .map(|(index, item)| {
+            .visible_items(top, bottom)
+            .into_iter()
+            .map(|visible| {
+                let item = visible.item;
                 let tile = (item.kind == ItemKind::Tile)
                     .then(|| layout.tiles.get(item.start as usize))
                     .flatten();
                 ffi::DrawItem {
-                    index,
+                    index: visible.index,
+                    clip_x: visible.clip.map_or(0.0, |clip| clip.x),
+                    clip_y: visible.clip.map_or(0.0, |clip| clip.y),
+                    clip_width: visible.clip.map_or(-1.0, |clip| clip.width),
+                    clip_height: visible.clip.map_or(0.0, |clip| clip.height),
                     kind: match item.kind {
                         ItemKind::Rect => 0,
                         ItemKind::Text | ItemKind::Marker => 1,
@@ -549,6 +557,10 @@ impl Page {
             color: 0,
             font: 0,
             decoration: 0,
+            clip_x: 0.0,
+            clip_y: 0.0,
+            clip_width: -1.0,
+            clip_height: 0.0,
         }
     }
 

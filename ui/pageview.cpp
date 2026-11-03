@@ -43,6 +43,31 @@ void giveBackFreeMemory()
 #endif
 }
 
+// Holds a cut for as long as one item is being drawn.
+class ClipForItem {
+public:
+    ClipForItem(QPainter &painter, qreal x, qreal y, qreal width, qreal height)
+        : painter(painter), active(width >= 0)
+    {
+        if (active) {
+            painter.save();
+            painter.setClipRect(QRectF(x, y, width, height), Qt::IntersectClip);
+        }
+    }
+    ~ClipForItem()
+    {
+        if (active) {
+            painter.restore();
+        }
+    }
+    ClipForItem(const ClipForItem &) = delete;
+    ClipForItem &operator=(const ClipForItem &) = delete;
+
+private:
+    QPainter &painter;
+    bool active;
+};
+
 // How often more of an arriving page comes in, when it is made to take its time.
 const int arrivalPieceMs = 50;
 // How much of a large local page comes at a time, between which the window goes on.
@@ -829,6 +854,8 @@ void PageView::paintEvent(QPaintEvent *event)
     }
     const auto items = page->visible_items(static_cast<float>(visible.top()), static_cast<float>(visible.bottom()));
     for (const auto &item : items) {
+        // What cannot just be made smaller is cut when drawn.
+        const ClipForItem clip(painter, item.clip_x, item.clip_y, item.clip_width, item.clip_height);
         const QRectF box(item.x, item.y, item.width, item.height);
         const QColor color = QColor::fromRgba(item.color);
         if (item.kind == 0) {

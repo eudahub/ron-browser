@@ -6,11 +6,13 @@
 //! not the geometry. List markers live apart from it, so they cannot be selected.
 //!
 //! Floats take their place at the side, and lines of text go around them. Tables are in
-//! [`table`] and flexible boxes in [`flex`]. Not handled yet: positioned boxes, which stay in the
-//! flow.
+//! [`table`], flexible boxes in [`flex`] and positioned boxes in [`positioned`].
 
 mod flex;
+mod positioned;
 mod table;
+
+pub use positioned::{ClipArea, PaintLayer, VisibleItem};
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -21,7 +23,7 @@ use crate::images::ImageStore;
 use ron::css::{
     BackgroundRepeat, BorderStyle, Clear, Color, ComputedStyle, Display, Float, LineHeight,
     ListStyleType, Overflow, Size, Styles, TextAlign, TextTransform, VerticalAlign,
-    VerticalPosition, Visibility, WhiteSpace,
+    VerticalPosition, Viewport, Visibility, WhiteSpace,
 };
 use ron::html::{Document, NodeId, NodeKind, Tag};
 
@@ -175,6 +177,8 @@ pub struct Layout {
     pub unplaced_items: Option<u32>,
     /// The same for [`Self::link_areas`].
     pub unplaced_link_areas: Option<u32>,
+    /// Ranges of items that draw above others or are cut off, ordered by where they start.
+    pub paint_layers: Vec<PaintLayer>,
 }
 
 impl Layout {
@@ -314,6 +318,10 @@ struct Frame {
     cell_return: Option<Box<InlineReturn>>,
     /// What to go back to when this block is an item of a flexible box.
     flex_return: Option<Box<InlineReturn>>,
+    /// What to go back to when this block is out of the flow.
+    out_return: Option<Box<positioned::PositionedReturn>>,
+    /// Where it started, when it is positioned or hides what goes beyond it.
+    span: Option<Box<positioned::FrameSpan>>,
     background_tile: Option<usize>,
     padding_top: f32,
     margin_bottom: f32,
@@ -437,14 +445,20 @@ struct Layouter<'a> {
     /// The flexible boxes open around the current position, of which the same holds.
     flexes: Vec<flex::FlexState>,
     flex_contents: HashMap<usize, Option<Rc<flex::FlexContent>>>,
+    /// How high the view is, which boxes going by the page count from.
+    view_height: f32,
+    /// Absolute boxes that wait for the box they go by, innermost last.
+    pending_boxes: Vec<positioned::PendingBox>,
+    /// How far down positioned boxes reach, as the page can be scrolled that far.
+    lowest_positioned: f32,
 }
 
-/// Lays out a document in a view of this width.
+/// Lays out a document in a view of this size.
 pub fn layout(
     document: &Document,
     styles: &Styles,
     images: &ImageStore,
-    width: f32,
+    viewport: Viewport,
     measurer: &mut dyn TextMeasurer,
 ) -> Layout {
     let mut result = Layout::default();
@@ -453,7 +467,7 @@ pub fn layout(
         document,
         styles,
         images,
-        width,
+        viewport,
         measurer,
         true,
         &mut progress,
@@ -474,12 +488,13 @@ pub fn layout_more(
     document: &Document,
     styles: &Styles,
     images: &ImageStore,
-    width: f32,
+    viewport: Viewport,
     measurer: &mut dyn TextMeasurer,
     complete: bool,
     progress: &mut LayoutProgress,
     out: &mut Layout,
 ) {
+    let width = viewport.width;
     let state = progress
         .0
         .take()
@@ -521,6 +536,9 @@ pub fn layout_more(
         grid_depth: 0,
         flexes: Vec::new(),
         flex_contents: HashMap::new(),
+        view_height: viewport.height,
+        pending_boxes: state.pending_boxes,
+        lowest_positioned: state.lowest_positioned,
     };
     let position = layouter.run(state.position);
     if complete {
@@ -551,7 +569,10 @@ pub fn layout_more(
         inline_box_depth: layouter.inline_box_depth,
         last_line_bottom: layouter.last_line_bottom,
         last_baseline: layouter.last_baseline,
+        pending_boxes: layouter.pending_boxes,
+        lowest_positioned: layouter.lowest_positioned,
     });
+    positioned::order_layers(&mut out.paint_layers);
     out.width = out.width.max(width);
     if let Some(node) = canvas_node {
         let style = styles.get(node);
@@ -614,6 +635,8 @@ struct LayoutState {
     inline_box_depth: usize,
     last_line_bottom: Option<f32>,
     last_baseline: Option<f32>,
+    pending_boxes: Vec<positioned::PendingBox>,
+    lowest_positioned: f32,
 }
 
 impl LayoutState {
@@ -641,6 +664,8 @@ impl LayoutState {
                 inline_return: None,
                 cell_return: None,
                 flex_return: None,
+                out_return: None,
+                span: None,
                 background_tile: None,
                 padding_top: 0.0,
                 margin_bottom: 0.0,
@@ -662,6 +687,8 @@ impl LayoutState {
             inline_box_depth: 0,
             last_line_bottom: None,
             last_baseline: None,
+            pending_boxes: Vec::new(),
+            lowest_positioned: 0.0,
         }
     }
 }
@@ -822,7 +849,8 @@ impl Layouter<'_> {
             if document.kind(id) == NodeKind::Element
                 && self.is_open(id)
                 && (table::is_table(self.styles.get(id).display)
-                    || flex::is_flex(self.styles.get(id).display))
+                    || flex::is_flex(self.styles.get(id).display)
+                    || positioned::is_out_of_flow(self.styles.get(id)))
             {
                 if is_block(self.styles.get(id).display) {
                     self.flush_inline();
@@ -856,7 +884,9 @@ impl Layouter<'_> {
             };
         }
         self.flush_inline();
-        self.out.height = (self.cursor + self.margin.value().max(0.0)).max(self.lowest_float);
+        self.out.height = (self.cursor + self.margin.value().max(0.0))
+            .max(self.lowest_float)
+            .max(self.lowest_positioned);
         Position::End
     }
 
@@ -877,7 +907,9 @@ impl Layouter<'_> {
             .map_or((self.cursor, self.margin, self.lowest_float), |saved| {
                 (saved.cursor, saved.margin, saved.lowest_float)
             });
-        self.out.height = (cursor + margin.value().max(0.0)).max(lowest_float);
+        self.out.height = (cursor + margin.value().max(0.0))
+            .max(lowest_float)
+            .max(self.lowest_positioned);
         // Blocks that are still open reach as far as has come.
         for frame in &self.frames[..open_box.unwrap_or(self.frames.len())] {
             if let (Some(index), Some(top)) = (frame.background_item, frame.top) {
@@ -946,11 +978,23 @@ impl Layouter<'_> {
         if style.display == Display::None || is_replaced(self.document, id) {
             return false;
         }
-        let in_table_structure = self.in_table_structure();
+        let out_of_flow = positioned::is_out_of_flow(style);
+        let in_table_structure = !out_of_flow && self.in_table_structure();
         if in_table_structure && !Self::is_table_part(style.display) {
             return false;
         }
         self.note_link_and_anchor(id);
+        if out_of_flow {
+            if style.text_decoration != 0 && self.document.tag(id) != Tag::Img {
+                let all = self.current_decoration() | style.text_decoration;
+                self.decorations.push((id, all));
+            }
+            let goes_on = self.enter_out_of_flow(id, style);
+            if goes_on {
+                self.begin_inner_layout(id, style);
+            }
+            return goes_on;
+        }
         let in_flex_structure = self.in_flex_structure();
         if self.document.tag(id) == Tag::Img && !in_flex_structure {
             self.add_image(id, style);
@@ -1402,6 +1446,7 @@ impl Layouter<'_> {
         forced_width: Option<f32>,
         float_place: Option<(f32, f32)>,
     ) {
+        let span = self.start_span(style);
         let parent = self.frames.last().expect("the root frame stays");
         let (parent_x, available) = (parent.content_x, parent.content_width);
 
@@ -1492,6 +1537,8 @@ impl Layouter<'_> {
             inline_return: None,
             cell_return: None,
             flex_return: None,
+            out_return: None,
+            span,
             background_tile,
             padding_top,
             margin_bottom: resolve(style.margin.bottom, available).unwrap_or(0.0),
@@ -1700,7 +1747,11 @@ impl Layouter<'_> {
             match document.kind(node) {
                 NodeKind::Element => {
                     let style = self.styles.get(node);
-                    if style.display != Display::None && !is_replaced(document, node) {
+                    // What is out of the flow takes no room in it.
+                    if style.display != Display::None
+                        && !is_replaced(document, node)
+                        && !positioned::is_out_of_flow(style)
+                    {
                         let sides = BoxSides::of(style, 0.0);
                         if document.tag(node) == Tag::Img {
                             // A floating image also wants its room beside the text.
@@ -2040,6 +2091,7 @@ impl Layouter<'_> {
                 || frame.lowest_float > 0.0
                 || frame.cell_return.is_some()
                 || frame.flex_return.is_some()
+                || frame.out_return.is_some()
         };
         if needs_room {
             if self.frames.last().is_some_and(|frame| frame.top.is_some()) {
@@ -2058,6 +2110,8 @@ impl Layouter<'_> {
             if let Some(index) = frame.background_item {
                 self.out.items[index].y = y;
             }
+            let depth = self.frames.len();
+            self.place_boxes_of(depth, &frame, y, y);
             return;
         };
         let content_top = top + frame.border_top + frame.padding_top;
@@ -2073,12 +2127,20 @@ impl Layouter<'_> {
             content_height = content_height.min(most);
         }
         let bottom = content_top + content_height + frame.bottom_inset;
+        let depth = self.frames.len();
+        self.place_boxes_of(depth, &frame, top, bottom);
         if let Some(saved) = frame.cell_return.take() {
+            self.finish_span(&frame, top, bottom);
             self.close_cell(&frame, *saved, top, bottom);
             return;
         }
         if let Some(saved) = frame.flex_return.take() {
+            self.finish_span(&frame, top, bottom);
             self.close_flex_item(&frame, *saved, top, bottom);
+            return;
+        }
+        if let Some(saved) = frame.out_return.take() {
+            self.close_out_of_flow(&frame, *saved, top, bottom);
             return;
         }
         self.cursor = bottom;
@@ -2090,6 +2152,8 @@ impl Layouter<'_> {
         }
         self.push_borders(self.styles.get(node), frame.x, top, frame.width, bottom);
         self.out.width = self.out.width.max(frame.x + frame.width);
+        self.finish_span(&frame, top, bottom);
+        self.shift_relative(&frame);
         if let Some(saved) = frame.inline_return {
             self.close_inline_box(node, *saved, (frame.x, frame.width), (top, bottom));
             return;
