@@ -116,10 +116,14 @@ impl Selection {
         };
         let mut highlights = Vec::new();
         for line in &layout.lines[first..] {
-            if line.start as usize >= range.end || (layout.lines_in_order && line.top >= bottom) {
+            if layout.lines_in_order && (line.start as usize >= range.end || line.top >= bottom) {
                 break;
             }
-            if (line.end as usize) <= range.start || line.top >= bottom || line.bottom <= top {
+            if line.start as usize >= range.end
+                || (line.end as usize) <= range.start
+                || line.top >= bottom
+                || line.bottom <= top
+            {
                 continue;
             }
             for item in line_items(layout, line) {

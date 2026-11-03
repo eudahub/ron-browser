@@ -10,6 +10,7 @@
 //! for now.
 
 use std::collections::HashMap;
+use std::ops::Range;
 
 use crate::images::ImageStore;
 
@@ -237,13 +238,46 @@ struct FloatBox {
     bottom: f32,
 }
 
-/// An image among the text of a line.
+/// An image or an inline block among the text of a line.
 #[derive(Clone, Copy)]
 struct Atom {
     node: NodeId,
     image: Option<u32>,
+    /// Which of [`Layouter::inline_boxes`] it is, when it is an inline block.
+    inline_box: Option<u32>,
+    /// The size of its content.
     width: f32,
     height: f32,
+}
+
+/// An inline block that has been laid out on its own and waits for a line to take it. All it has
+/// put in the layout is at a place of its own, and moves once the line has decided.
+struct InlineBox {
+    x: f32,
+    y: f32,
+    width: f32,
+    items: Range<usize>,
+    lines: Range<usize>,
+    link_areas: Range<usize>,
+    area_shapes: Range<usize>,
+    /// How far down from its top its text sits, if it has a baseline.
+    baseline: Option<f32>,
+}
+
+/// What goes on around an inline block, while it is being laid out.
+struct InlineReturn {
+    cursor: f32,
+    margin: Margin,
+    runs: Vec<Run>,
+    marker: Option<Marker>,
+    floats: Vec<FloatBox>,
+    lowest_float: f32,
+    last_line_bottom: Option<f32>,
+    last_baseline: Option<f32>,
+    items_start: usize,
+    lines_start: usize,
+    link_areas_start: usize,
+    area_shapes_start: usize,
 }
 
 struct Frame {
@@ -262,6 +296,8 @@ struct Frame {
     lowest_float: f32,
     /// What to go back to when this block is a float.
     float_return: Option<FloatReturn>,
+    /// What to go back to when this block is an inline block.
+    inline_return: Option<Box<InlineReturn>>,
     background_tile: Option<usize>,
     padding_top: f32,
     margin_bottom: f32,
@@ -367,7 +403,11 @@ struct Layouter<'a> {
     maps: Option<HashMap<String, NodeId>>,
     /// How many more parts of image maps a page gets, however often it uses a map.
     map_areas_left: usize,
+    inline_boxes: Vec<InlineBox>,
+    /// How many inline blocks are open around the current position.
+    inline_box_depth: usize,
     last_line_bottom: Option<f32>,
+    last_baseline: Option<f32>,
 }
 
 /// Lays out a document in a view of this width.
@@ -405,6 +445,7 @@ pub fn layout(
             contains_floats: false,
             lowest_float: 0.0,
             float_return: None,
+            inline_return: None,
             background_tile: None,
             padding_top: 0.0,
             margin_bottom: 0.0,
@@ -423,7 +464,10 @@ pub fn layout(
         open_links: Vec::new(),
         maps: None,
         map_areas_left: MAX_MAP_AREAS,
+        inline_boxes: Vec::new(),
+        inline_box_depth: 0,
         last_line_bottom: None,
+        last_baseline: None,
     };
     layouter.run();
     let mut result = layouter.out;
@@ -552,6 +596,11 @@ fn is_replaced(document: &Document, id: NodeId) -> bool {
         && matches!(document.name(id), "video" | "audio" | "canvas"))
 }
 
+/// Whether what shows through an element is its own text, unlike a box that paints itself.
+fn is_inline_level_text(display: Display) -> bool {
+    matches!(display, Display::Inline | Display::Contents)
+}
+
 fn is_block(display: Display) -> bool {
     !matches!(
         display,
@@ -627,6 +676,8 @@ impl Layouter<'_> {
         if style.float != Float::None {
             self.flush_inline();
             self.open_float(id, style);
+        } else if self.becomes_inline_box(id, style) {
+            self.open_inline_box(id, style);
         } else if is_block(style.display) {
             self.flush_inline();
             self.open_frame(id, style);
@@ -823,13 +874,183 @@ impl Layouter<'_> {
         if self.decorations.last().is_some_and(|&(node, _)| node == id) {
             self.decorations.pop();
         }
-        if self.open_links.last().is_some_and(|&(node, _)| node == id) {
-            self.open_links.pop();
-        }
         if self.frames.last().is_some_and(|frame| frame.node == id) {
             self.flush_inline();
             self.close_frame();
         }
+        // After the block, as an inline block goes in its line as part of the link around it.
+        if self.open_links.last().is_some_and(|&(node, _)| node == id) {
+            self.open_links.pop();
+        }
+    }
+
+    /// Whether an element makes a box of its own within a line. Form controls do not yet, as
+    /// they will need drawing of their own.
+    fn becomes_inline_box(&self, id: NodeId, style: &ComputedStyle) -> bool {
+        matches!(
+            style.display,
+            Display::InlineBlock | Display::InlineTable | Display::InlineFlex | Display::InlineGrid
+        ) && !matches!(
+            self.document.tag(id),
+            Tag::Input | Tag::Select | Tag::Textarea | Tag::Button
+        ) && self.inline_box_depth < MAX_INLINE_BOX_DEPTH
+    }
+
+    /// Starts laying out an inline block by itself. What goes on around it waits until it closes.
+    fn open_inline_box(&mut self, id: NodeId, style: &ComputedStyle) {
+        self.begin_text();
+        self.flush_pending_space();
+        let available = self.frames.last().map_or(0.0, |frame| frame.content_width);
+        let sides = BoxSides::of(style, available);
+        // As wide as what it holds, as far as there is room.
+        let wanted = resolve(style.width, available).map(|width| {
+            if style.box_sizing == ron::css::BoxSizing::BorderBox {
+                (width - sides.insets()).max(0.0)
+            } else {
+                width
+            }
+        });
+        let content_width = wanted.unwrap_or_else(|| {
+            let preferred = self.preferred_width(id, self.inline_box_depth);
+            preferred.min((available - sides.horizontal()).max(0.0))
+        });
+        let saved = Box::new(InlineReturn {
+            cursor: self.cursor,
+            margin: self.margin,
+            runs: std::mem::take(&mut self.runs),
+            marker: self.marker.take(),
+            floats: std::mem::take(&mut self.floats),
+            lowest_float: self.lowest_float,
+            last_line_bottom: self.last_line_bottom.take(),
+            last_baseline: self.last_baseline.take(),
+            items_start: self.out.items.len(),
+            lines_start: self.out.lines.len(),
+            link_areas_start: self.out.link_areas.len(),
+            area_shapes_start: self.out.area_shapes.len(),
+        });
+        self.margin = Margin::default();
+        self.has_inline_content = false;
+        // Its text follows that of the line it is in, with nothing between them.
+        self.text_begun = true;
+        self.lowest_float = 0.0;
+        self.inline_box_depth += 1;
+        // Decorations of what is around it do not reach inside.
+        if self.decorations.last().is_some_and(|&(node, _)| node == id) {
+            self.decorations.pop();
+        }
+        self.decorations.push((id, style.text_decoration));
+        self.open_frame_at(id, style, Some(content_width), Some((0.0, 0.0)));
+        if let Some(frame) = self.frames.last_mut() {
+            frame.inline_return = Some(saved);
+        }
+    }
+
+    /// Ends an inline block, and hands it to the line it is in.
+    fn close_inline_box(
+        &mut self,
+        node: NodeId,
+        saved: InlineReturn,
+        (x, width): (f32, f32),
+        (top, bottom): (f32, f32),
+    ) {
+        let style = self.styles.get(node);
+        let baseline = if style.overflow == Overflow::Visible {
+            self.last_baseline.map(|baseline| baseline - top)
+        } else {
+            None
+        };
+        let number = offset(self.inline_boxes.len());
+        self.inline_boxes.push(InlineBox {
+            x,
+            y: top,
+            width,
+            items: saved.items_start..self.out.items.len(),
+            lines: saved.lines_start..self.out.lines.len(),
+            link_areas: saved.link_areas_start..self.out.link_areas.len(),
+            area_shapes: saved.area_shapes_start..self.out.area_shapes.len(),
+            baseline,
+        });
+        self.inline_box_depth -= 1;
+        self.cursor = saved.cursor;
+        self.margin = saved.margin;
+        self.runs = saved.runs;
+        self.pending_space = None;
+        self.text_begun = true;
+        self.marker = saved.marker;
+        self.floats = saved.floats;
+        self.lowest_float = saved.lowest_float;
+        self.last_line_bottom = saved.last_line_bottom;
+        self.last_baseline = saved.last_baseline;
+        let available = self.frames.last().map_or(0.0, |frame| frame.content_width);
+        let sides = BoxSides::of(style, available);
+        let atom = Atom {
+            node,
+            image: None,
+            inline_box: Some(number),
+            width: (width - sides.insets()).max(0.0),
+            height: (bottom - top - sides.vertical_insets()).max(0.0),
+        };
+        let start = self.out.text.len();
+        let mut run = self.make_run(style, start, start);
+        run.atom = Some(atom);
+        // What it holds goes by its own white space, but whether a line can break around it is up
+        // to what it stands in.
+        if let Some(parent) = self.document.parent(node) {
+            run.wraps = !matches!(
+                self.styles.get(parent).white_space,
+                WhiteSpace::Pre | WhiteSpace::Nowrap
+            );
+        }
+        self.runs.push(run);
+        self.has_inline_content = true;
+    }
+
+    /// Moves all that an inline block has put in the layout.
+    fn move_inline_box(&mut self, number: u32, x: f32, y: f32) {
+        let Some(inline_box) = self.inline_boxes.get(number as usize) else {
+            return;
+        };
+        let (dx, dy) = (x - inline_box.x, y - inline_box.y);
+        let out = &mut self.out;
+        for item in &mut out.items[inline_box.items.clone()] {
+            item.x += dx;
+            item.y += dy;
+            match item.kind {
+                ItemKind::Text | ItemKind::Marker => item.baseline += dy,
+                ItemKind::Tile => {
+                    if let Some(tile) = out.tiles.get_mut(item.start as usize) {
+                        tile.origin_x += dx;
+                        tile.origin_y += dy;
+                    }
+                }
+                ItemKind::Rect | ItemKind::Image => {}
+            }
+        }
+        for line in &mut out.lines[inline_box.lines.clone()] {
+            line.top += dy;
+            line.bottom += dy;
+            line.left += dx;
+            line.right += dx;
+        }
+        for area in &mut out.link_areas[inline_box.link_areas.clone()] {
+            area.x += dx;
+            area.y += dy;
+        }
+        for shape in &mut out.area_shapes[inline_box.area_shapes.clone()] {
+            match shape {
+                AreaShape::Circle { x, y, .. } => {
+                    *x += dx;
+                    *y += dy;
+                }
+                AreaShape::Polygon(corners) => {
+                    for corner in corners {
+                        corner.0 += dx;
+                        corner.1 += dy;
+                    }
+                }
+            }
+        }
+        out.width = out.width.max(x + inline_box.width);
     }
 
     fn current_decoration(&self) -> u8 {
@@ -935,6 +1156,7 @@ impl Layouter<'_> {
             contains_floats: style.overflow != Overflow::Visible || float_place.is_some(),
             lowest_float: 0.0,
             float_return: None,
+            inline_return: None,
             background_tile,
             padding_top,
             margin_bottom: resolve(style.margin.bottom, available).unwrap_or(0.0),
@@ -1068,6 +1290,7 @@ impl Layouter<'_> {
         let parent = self.frames.last().expect("the root frame stays");
         let (limit_left, limit_right) = (parent.content_x, parent.content_x + parent.content_width);
         let available = parent.content_width;
+        let depth = self.inline_box_depth;
         let margin = |size| resolve(size, available).unwrap_or(0.0);
         let margin_left = margin(style.margin.left);
         let margin_right = margin(style.margin.right);
@@ -1080,8 +1303,10 @@ impl Layouter<'_> {
             + style.border_width.right;
         let extra = margin_left + margin_right + insets;
         // Without a set width, a float is as wide as what it holds, as far as there is room.
-        let content_width = resolve(style.width, available)
-            .unwrap_or_else(|| self.preferred_width(id).min((available - extra).max(0.0)));
+        let content_width = resolve(style.width, available).unwrap_or_else(|| {
+            self.preferred_width(id, depth)
+                .min((available - extra).max(0.0))
+        });
         let is_left = style.float == Float::Left;
         let saved = FloatReturn {
             cursor: self.cursor,
@@ -1115,10 +1340,14 @@ impl Layouter<'_> {
     }
 
     /// The width of a block's content without any wrapping. Walks the tree without recursion.
-    fn preferred_width(&mut self, id: NodeId) -> f32 {
+    fn preferred_width(&mut self, id: NodeId, depth: usize) -> f32 {
         let document = self.document;
         let mut widest = 0.0_f32;
         let mut line = 0.0_f32;
+        // What the blocks open around the line take across.
+        let mut around = 0.0_f32;
+        // A space counts once something follows it on the line.
+        let mut space = 0.0_f32;
         let mut current = document.first_child(id);
         while let Some(node) = current {
             let mut descend = false;
@@ -1126,13 +1355,32 @@ impl Layouter<'_> {
                 NodeKind::Element => {
                     let style = self.styles.get(node);
                     if style.display != Display::None && !is_replaced(document, node) {
+                        let sides = BoxSides::of(style, 0.0);
                         if document.tag(node) == Tag::Img {
                             // A floating image also wants its room beside the text.
                             let (width, _) = self.image_size(node, style, 0.0);
-                            line += width;
-                        } else if document.tag(node) == Tag::Br || is_block(style.display) {
-                            widest = widest.max(line);
+                            line += space + width + sides.horizontal();
+                            space = 0.0;
+                        } else if style.float == Float::None
+                            && self.becomes_inline_box(node, style)
+                            && depth + 1 < MAX_INLINE_BOX_DEPTH
+                        {
+                            let width = match resolve(style.width, 0.0) {
+                                Some(width) => width,
+                                None => self.preferred_width(node, depth + 1),
+                            };
+                            line += space + width + sides.horizontal();
+                            space = 0.0;
+                        } else if document.tag(node) == Tag::Br {
+                            widest = widest.max(line + around);
                             line = 0.0;
+                            space = 0.0;
+                            descend = true;
+                        } else if is_block(style.display) {
+                            widest = widest.max(line + around);
+                            line = 0.0;
+                            space = 0.0;
+                            around += sides.horizontal();
                             descend = true;
                         } else {
                             descend = true;
@@ -1143,8 +1391,28 @@ impl Layouter<'_> {
                     let style = self.styles.get(node);
                     let font = self.font_of(style);
                     let text = document.decoded_text(node);
-                    let collapsed = text.split_ascii_whitespace().collect::<Vec<_>>().join(" ");
-                    line += self.measurer.width(font, &collapsed);
+                    let keeps_spaces =
+                        matches!(style.white_space, WhiteSpace::Pre | WhiteSpace::PreWrap);
+                    if keeps_spaces {
+                        for part in text.split('\n') {
+                            line += space + self.measurer.width(font, part);
+                            space = 0.0;
+                            widest = widest.max(line + around);
+                        }
+                    } else {
+                        let collapsed = text.split_ascii_whitespace().collect::<Vec<_>>().join(" ");
+                        let space_width = self.measurer.width(font, " ");
+                        if text.starts_with(|c: char| c.is_ascii_whitespace()) && line > 0.0 {
+                            space = space_width;
+                        }
+                        if !collapsed.is_empty() {
+                            line += space + self.measurer.width(font, &collapsed);
+                            space = 0.0;
+                            if text.ends_with(|c: char| c.is_ascii_whitespace()) {
+                                space = space_width;
+                            }
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -1163,14 +1431,17 @@ impl Layouter<'_> {
                     if up == id {
                         return None;
                     }
-                    if is_block(self.styles.get(up).display) {
-                        widest = widest.max(line);
+                    let style = self.styles.get(up);
+                    if is_block(style.display) {
+                        widest = widest.max(line + around);
                         line = 0.0;
+                        space = 0.0;
+                        around -= BoxSides::of(style, 0.0).horizontal();
                     }
                 }
             });
         }
-        widest.max(line).ceil()
+        widest.max(line + around).ceil()
     }
 
     /// The size of an image's content box: what is set, or what the file has, keeping its shape.
@@ -1229,6 +1500,7 @@ impl Layouter<'_> {
         let atom = Atom {
             node: id,
             image,
+            inline_box: None,
             width,
             height,
         };
@@ -1411,6 +1683,10 @@ impl Layouter<'_> {
         }
         self.push_borders(self.styles.get(node), frame.x, top, frame.width, bottom);
         self.out.width = self.out.width.max(frame.x + frame.width);
+        if let Some(saved) = frame.inline_return {
+            self.close_inline_box(node, *saved, (frame.x, frame.width), (top, bottom));
+            return;
+        }
         if let Some(saved) = frame.float_return {
             self.in_float -= 1;
             let (left, right) = (
@@ -1635,7 +1911,9 @@ impl Layouter<'_> {
             line_height,
             shift,
             // A block paints its own background, once, behind all its lines.
-            background: if is_block(style.display) {
+            background: if is_block(style.display)
+                || (self.inline_box_depth > 0 && !is_inline_level_text(style.display))
+            {
                 Color::TRANSPARENT
             } else {
                 style.background_color
@@ -1909,13 +2187,31 @@ impl Layouter<'_> {
                 (top, (height - top).max(0.0))
             }
             VerticalPosition::Px(px) => (height + px, (-px).max(0.0)),
-            _ => (height, 0.0),
+            _ => {
+                // An inline block stands on the line of its last text, if it has any.
+                let baseline = atom
+                    .inline_box
+                    .and_then(|number| self.inline_boxes.get(number as usize))
+                    .and_then(|inline_box| inline_box.baseline);
+                match baseline {
+                    Some(baseline) => {
+                        let above = self.atom_sides(atom).margin_top + baseline;
+                        (above, (height - above).max(0.0))
+                    }
+                    None => (height, 0.0),
+                }
+            }
         }
     }
 
     fn draw_atom(&mut self, atom: Atom, x: f32, baseline: f32) {
         let sides = self.atom_sides(atom);
         let (above, _) = self.atom_extent(atom);
+        if let Some(number) = atom.inline_box {
+            let top = baseline - above + sides.margin_top;
+            self.move_inline_box(number, x + sides.margin_left, top);
+            return;
+        }
         let style = self.styles.get(atom.node);
         self.draw_image_box(atom, style, &sides, x, baseline - above);
     }
@@ -2096,6 +2392,7 @@ impl Layouter<'_> {
         self.out.width = self.out.width.max(x);
         self.cursor = bottom;
         self.last_line_bottom = Some(bottom);
+        self.last_baseline = Some(baseline);
         block.line.clear();
         block.line_width = 0.0;
         block.indent = 0.0;
@@ -2114,6 +2411,9 @@ const MARKER_GAP: f32 = 0.5;
 const MAX_ACTIVE_FLOATS: usize = 1000;
 /// Each costs time on every move of the mouse.
 const MAX_MAP_AREAS: usize = 100_000;
+/// Finding how wide an inline block wants to be walks all it holds, for each block around it, so
+/// deeper ones stay ordinary inline elements.
+const MAX_INLINE_BOX_DEPTH: usize = 32;
 
 /// The margins, borders and padding of a box.
 struct BoxSides {
@@ -2157,6 +2457,16 @@ impl BoxSides {
             + self.border_right
             + self.padding_left
             + self.padding_right
+    }
+
+    /// What borders and padding take across.
+    fn insets(&self) -> f32 {
+        self.border_left + self.border_right + self.padding_left + self.padding_right
+    }
+
+    /// What borders and padding take down.
+    fn vertical_insets(&self) -> f32 {
+        self.border_top + self.border_bottom + self.padding_top + self.padding_bottom
     }
 
     fn vertical(&self) -> f32 {
