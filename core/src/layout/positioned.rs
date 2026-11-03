@@ -483,7 +483,7 @@ impl Layouter<'_> {
         let stretches = style.height == Size::Auto
             && style.offsets.top != Size::Auto
             && style.offsets.bottom != Size::Auto;
-        let is_percent = matches!(style.height, Size::Percent(_));
+        let is_percent = matches!(style.height, Size::Percent(_) | Size::Calc(_));
         let borders_wait = stretches || is_percent;
         if !saved.is_plain && !borders_wait {
             self.push_borders(style, frame.x, top, frame.width, bottom);
@@ -552,6 +552,7 @@ impl Layouter<'_> {
             Size::Percent(percent) => {
                 height = inside_height * percent / 100.0;
             }
+            Size::Calc(calc) => height = calc.of(inside_height).max(0.0),
             Size::Auto => {
                 if let (Some(top), Some(bottom)) = (top, bottom) {
                     height =

@@ -7,6 +7,9 @@ background images, floats, inline blocks, tables, flexible boxes, grids, positio
 style sheets. Text aims to land where it does in Firefox. Form controls do not draw yet, and scripts do not
 run, so many pages on the web still look quite different from how they should.
 
+Lengths can be written with `calc()`, `min()`, `max()` and `clamp()`, apart from expressions that depend on
+a percentage in several ways at once, like the smallest of three different percentages.
+
 Grids show once all of them has come, and do not have `grid-auto-flow: column`, `dense`, `grid-auto-columns`,
 named lines other than those of areas, subgrids or the `grid` and `grid-template` shorthands.
 `examples/grid.html` shows what they can do.

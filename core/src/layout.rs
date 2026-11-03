@@ -730,6 +730,7 @@ fn background_tile(
         Size::Auto => 0.0,
         Size::Px(px) => px,
         Size::Percent(percent) => (room - own) * percent / 100.0,
+        Size::Calc(calc) => calc.of(room - own),
     };
     let origin_x = x + place(style.background_position_x, width, image_width);
     let origin_y = y + place(style.background_position_y, height, image_height);
@@ -787,6 +788,7 @@ fn resolve(size: Size, whole: f32) -> Option<f32> {
         Size::Auto => None,
         Size::Px(px) => Some(px),
         Size::Percent(percent) => Some(whole * percent / 100.0),
+        Size::Calc(calc) => Some(calc.of(whole)),
     }
 }
 

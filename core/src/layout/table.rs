@@ -515,7 +515,7 @@ impl Layouter<'_> {
                         grid.fixed[column] = true;
                     }
                     Size::Percent(percent) => grid.percent[column] = percent.clamp(0.0, 100.0),
-                    Size::Auto => {}
+                    Size::Auto | Size::Calc(_) => {}
                 }
                 column += 1;
             }
