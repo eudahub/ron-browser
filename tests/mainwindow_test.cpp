@@ -46,6 +46,8 @@ private slots:
     void linksToElsewhereStayNamedOnly();
     void theAddressLineFollowsAndLeads();
     void pagesComeFromTheNetworkWithTheirImages();
+    void aPageShowsWithItsStyleSheet();
+    void stoppingWhileASheetComesLeavesThePage();
     void backGoesToBeforeARedirect();
     void whatFailsLeavesThePageAndTheTypedAddress();
     void aPageOnTheNetworkCannotOpenLocalFiles();
@@ -100,7 +102,13 @@ void MainWindowTest::answerRequest(QTcpSocket *socket)
         respond("200 OK", "Content-Type: image/png\r\n", png);
     } else if (path == QStringLiteral("/photo.jpg")) {
         respond("200 OK", "Content-Type: image/jpeg\r\n", "not really");
-    } else if (path != QStringLiteral("/never")) {
+    } else if (path == QStringLiteral("/styled.html")) {
+        respond("200 OK", html, "<title>Styled</title><link rel=stylesheet href=styled.css><p>x");
+    } else if (path == QStringLiteral("/styled.css")) {
+        respond("200 OK", "Content-Type: text/css\r\n", "html{background:rgb(0,128,0)}");
+    } else if (path == QStringLiteral("/waits.html")) {
+        respond("200 OK", html, "<title>Waits</title><link rel=stylesheet href=never.css><p>x");
+    } else if (path != QStringLiteral("/never") && path != QStringLiteral("/never.css")) {
         respond("404 Not Found", "", "gone");
     }
 }
@@ -278,6 +286,31 @@ void MainWindowTest::pagesComeFromTheNetworkWithTheirImages()
     QTRY_COMPARE(window->windowTitle(), QStringLiteral("On the net"));
     action("Back")->trigger();
     QCOMPARE(window->windowTitle(), QStringLiteral("First"));
+}
+
+void MainWindowTest::aPageShowsWithItsStyleSheet()
+{
+    auto *line = window->findChild<QLineEdit *>();
+    line->setText(serverAddress("/styled.html"));
+    QTest::keyClick(line, Qt::Key_Return);
+    QTRY_COMPARE(window->windowTitle(), QStringLiteral("Styled"));
+    QVERIFY(served.contains(QStringLiteral("/styled.css")));
+    // The sheet was there when the page first showed.
+    QCOMPARE(window->pageView()->viewport()->grab().toImage().pixelColor(5, 5), QColor(0, 128, 0));
+}
+
+void MainWindowTest::stoppingWhileASheetComesLeavesThePage()
+{
+    auto *line = window->findChild<QLineEdit *>();
+    line->setText(serverAddress("/waits.html"));
+    QTest::keyClick(line, Qt::Key_Return);
+    QTRY_VERIFY(served.contains(QStringLiteral("/never.css")));
+    QCOMPARE(window->windowTitle(), QStringLiteral("First"));
+    QVERIFY(action("Stop")->isEnabled());
+    action("Stop")->trigger();
+    QVERIFY(!action("Stop")->isEnabled());
+    QCOMPARE(window->windowTitle(), QStringLiteral("First"));
+    QVERIFY(!action("Back")->isEnabled());
 }
 
 void MainWindowTest::backGoesToBeforeARedirect()

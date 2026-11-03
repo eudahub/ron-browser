@@ -45,7 +45,9 @@ private:
     // Starts reading from the network. What happens then depends on `arrival`.
     void startFetch(const QString &address, const QString &askingPage);
     void checkFetch();
+    void showFetchedPage();
     void stopFetch();
+    bool isFetching() const;
     void goBack();
     void goForward();
     // Shows the place the history is now at.
@@ -72,6 +74,9 @@ private:
     // return to how far down the page was, without adding.
     QString fetchFragment;
     std::optional<int> fetchScroll;
+    // About the page that has come, while its style sheets are on the way.
+    QString fetchedAddress;
+    QString fetchedStatus;
     // What the status bar says about the page, when it is not showing a link.
     QString pageStatus;
 };

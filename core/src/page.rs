@@ -2,14 +2,16 @@
 
 use std::collections::HashSet;
 
-use ron::css::{Styles, Viewport, compute_styles, document_stylesheets};
+use ron::css::{Styles, Viewport, compute_styles};
 use ron::html::{Document, NodeId, NodeKind, Tag, parse};
 
 use crate::images::{DecodedImage, ImageStore, NoResources, ResourceLoader};
 use crate::layout::{FontSpec, Layout, TextMeasurer, layout};
+use crate::sheets::{SheetRequest, Sheets, decode_css};
 
 pub struct Page {
     document: Document,
+    sheets: Sheets,
     styles: Styles,
     viewport: Viewport,
     layout: Layout,
@@ -46,10 +48,23 @@ impl Page {
     pub fn open_with(utf8: &str, loader: &mut dyn ResourceLoader, images: ImageStore) -> Self {
         let document = parse(utf8);
         let viewport = Viewport::default();
-        let sheets = document_stylesheets(&document, viewport);
-        let styles = compute_styles(&document, &sheets, viewport);
+        let mut sheets = Sheets::of_document(&document, None);
+        // Each round brings what the sheets of the last one import, which has a limit.
+        loop {
+            let requests = sheets.requests();
+            if requests.is_empty() {
+                break;
+            }
+            for request in requests {
+                if let Some(bytes) = loader.load(&request.location) {
+                    sheets.add(request.slot, &decode_css(&bytes, ""));
+                }
+            }
+        }
+        let styles = compute_styles(&document, &sheets.active(viewport), viewport);
         let mut page = Self {
             document,
+            sheets,
             styles,
             viewport,
             layout: Layout::default(),
@@ -57,6 +72,43 @@ impl Page {
         };
         page.load_images(loader);
         page
+    }
+
+    /// Parses a page from this address on the network. What it refers to comes in later, through
+    /// [`Self::sheet_requests`] and [`Self::image_sources`].
+    #[must_use]
+    pub fn open_fetched(utf8: &str, address: &str) -> Self {
+        let document = parse(utf8);
+        let viewport = Viewport::default();
+        let sheets = Sheets::of_document(&document, Some(address));
+        let styles = compute_styles(&document, &sheets.active(viewport), viewport);
+        Self {
+            document,
+            sheets,
+            styles,
+            viewport,
+            layout: Layout::default(),
+            images: ImageStore::default(),
+        }
+    }
+
+    /// The style sheets to read that have not been asked for yet.
+    pub fn sheet_requests(&mut self) -> Vec<SheetRequest> {
+        self.sheets.requests()
+    }
+
+    /// Adds a style sheet that came. It takes [`Self::apply_sheets`] to count.
+    pub fn add_sheet(&mut self, slot: u32, css: &str) {
+        self.sheets.add(slot, css);
+    }
+
+    /// Computes styles again, with the sheets that have come.
+    pub fn apply_sheets(&mut self) {
+        self.styles = compute_styles(
+            &self.document,
+            &self.sheets.active(self.viewport),
+            self.viewport,
+        );
     }
 
     fn load_images(&mut self, loader: &mut dyn ResourceLoader) {
@@ -117,9 +169,8 @@ impl Page {
         let viewport = Viewport { width, height };
         if viewport != self.viewport {
             // Conditions and lengths can depend on the size of the view.
-            let sheets = document_stylesheets(&self.document, viewport);
-            self.styles = compute_styles(&self.document, &sheets, viewport);
             self.viewport = viewport;
+            self.apply_sheets();
         }
         self.layout = layout(&self.document, &self.styles, &self.images, width, measurer);
     }

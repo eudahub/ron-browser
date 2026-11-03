@@ -30,6 +30,12 @@ public:
     // Images load from `directory`, the one the page is in, and from nowhere else.
     void setPage(const std::string &utf8, const QString &directory = QString());
     void clearPage();
+    // A page from the network waits unseen until its style sheets have come, or for long enough.
+    void prepareFetchedPage(const std::string &utf8, const QString &address);
+    bool hasIncomingPage() const;
+    bool incomingPageIsReady();
+    void showIncomingPage();
+    void dropIncomingPage();
     // Starts reading the images of a page that came from this address. They show as they arrive.
     void fetchImages(const QString &pageAddress);
     bool isLoadingImages() const;
@@ -90,6 +96,8 @@ private:
     QPointF lastDoubleClickPosition;
     QTimer *dragScrollTimer;
     QTimer *imageTimer;
+    QString incomingAddress;
+    QElapsedTimer incomingWait;
     QString hoveredLink;
     // Where the left button went down on a link, for telling a click from a drag.
     QString pressedLink;

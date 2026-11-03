@@ -121,7 +121,7 @@ void MainWindow::openPage(const QString &address)
 
 bool MainWindow::isLoading() const
 {
-    return pageFetch.has_value() || view->isLoadingImages();
+    return isFetching() || view->isLoadingImages();
 }
 
 bool MainWindow::loadLocalFile(const QString &address, const QString &path)
@@ -176,17 +176,30 @@ void MainWindow::startFetch(const QString &address, const QString &askingPage)
 
 void MainWindow::stopFetch()
 {
-    if (pageFetch) {
+    if (isFetching()) {
         fetchTimer->stop();
         pageFetch.reset();
+        view->dropIncomingPage();
         pageStatus.clear();
         statusBar()->clearMessage();
         updateNavigation();
     }
 }
 
+bool MainWindow::isFetching() const
+{
+    return pageFetch.has_value() || view->hasIncomingPage();
+}
+
 void MainWindow::checkFetch()
 {
+    if (view->hasIncomingPage()) {
+        if (view->incomingPageIsReady()) {
+            fetchTimer->stop();
+            showFetchedPage();
+        }
+        return;
+    }
     if (!pageFetch) {
         fetchTimer->stop();
         return;
@@ -195,10 +208,10 @@ void MainWindow::checkFetch()
     if (!fetched.done) {
         return;
     }
-    fetchTimer->stop();
     pageFetch.reset();
-    pageStatus.clear();
     if (!fetched.error.empty()) {
+        fetchTimer->stop();
+        pageStatus.clear();
         statusBar()->showMessage(tr("Cannot open it: %1").arg(shownAddress(asQString(fetched.error))));
         updateNavigation();
         return;
@@ -206,18 +219,28 @@ void MainWindow::checkFetch()
     const QString mime = asQString(fetched.mime);
     const QString address = asQString(fetched.address);
     if (!mime.isEmpty() && mime != QStringLiteral("text/html") && mime != QStringLiteral("application/xhtml+xml")) {
+        fetchTimer->stop();
+        pageStatus.clear();
         statusBar()->showMessage(tr("Not a web page, but %1: %2").arg(mime.left(100), shownAddress(address)));
         updateNavigation();
         return;
     }
     const std::string_view bytes(reinterpret_cast<const char *>(fetched.bytes.data()), fetched.bytes.size());
     const DecodedPage decoded = decodeFetchedPage(bytes, std::string(fetched.charset));
-    view->setPage(decoded.utf8);
+    view->prepareFetchedPage(decoded.utf8, address);
+    fetchedAddress = address;
+    const QString security = QUrl(address).scheme() == QStringLiteral("https") ? QString() : tr("Not secure. ");
+    fetchedStatus = security + tr("Encoding: %1 (%2)").arg(QString::fromStdString(decoded.encoding), decoded.encodingSource);
+}
+
+void MainWindow::showFetchedPage()
+{
+    view->showIncomingPage();
+    const QString address = fetchedAddress;
     loadedAddress = address;
     const QString title = view->pageTitle();
     setWindowTitle(title.isEmpty() ? QUrl(address).host() : title);
-    const QString security = QUrl(address).scheme() == QStringLiteral("https") ? QString() : tr("Not secure. ");
-    pageStatus = security + tr("Encoding: %1 (%2)").arg(QString::fromStdString(decoded.encoding), decoded.encodingSource);
+    pageStatus = fetchedStatus;
     statusBar()->showMessage(pageStatus);
     if (fetchScroll) {
         view->setScrollY(*fetchScroll);
@@ -234,7 +257,7 @@ void MainWindow::checkFetch()
 
 void MainWindow::goBack()
 {
-    if (pageFetch) {
+    if (isFetching()) {
         // What was being read never counted as a place, so Back only drops it.
         stopFetch();
         return;
@@ -336,12 +359,12 @@ void MainWindow::updateNavigation()
     backAction->setEnabled(history->can_go_back());
     forwardAction->setEnabled(history->can_go_forward());
     reloadAction->setEnabled(!loadedAddress.isEmpty());
-    stopAction->setEnabled(pageFetch.has_value());
+    stopAction->setEnabled(isFetching());
     // While something is being read, or after that failed, what the user typed stays to be fixed.
-    if (!pageFetch && pageStatus.isEmpty()) {
+    if (!isFetching() && pageStatus.isEmpty()) {
         return;
     }
-    if (!pageFetch) {
+    if (!isFetching()) {
         const QString fragment = asQString(history->current_fragment());
         addressBar->setText(fragment.isEmpty() ? loadedAddress : loadedAddress + u'#' + fragment);
     }

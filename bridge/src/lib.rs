@@ -147,6 +147,19 @@ mod ffi {
         fn start_page_fetch(address: &str, asking_page: &str) -> Box<PageFetch>;
         fn poll(self: &mut PageFetch) -> FetchedPage;
 
+        /// Parses a page from this address on the network, without reading what it refers to.
+        fn open_fetched_page(utf8: &str, address: &str) -> Box<Page>;
+
+        type SheetFetch;
+
+        /// Starts reading the style sheets of a page that came from this address.
+        fn start_sheet_fetch(self: &mut Page, page_address: &str) -> Box<SheetFetch>;
+        /// Takes the sheets that have arrived, and asks for what they import. Tells whether all
+        /// have come.
+        fn take_sheets(self: &mut Page, fetch: &mut SheetFetch, page_address: &str) -> bool;
+        /// Computes styles again, with the sheets that have come.
+        fn apply_sheets(self: &mut Page);
+
         type ImageFetch;
 
         /// Starts reading the images of a page that came from this address.
@@ -338,6 +351,30 @@ impl Page {
             .collect()
     }
 
+    fn start_sheet_fetch(&mut self, page_address: &str) -> Box<SheetFetch> {
+        let requests = self.page.sheet_requests();
+        Box::new(SheetFetch(net::SheetFetch::start(page_address, requests)))
+    }
+
+    fn take_sheets(&mut self, fetch: &mut SheetFetch, page_address: &str) -> bool {
+        for (slot, css) in fetch.0.poll() {
+            self.page.add_sheet(slot, &css);
+        }
+        if !fetch.0.is_done() {
+            return false;
+        }
+        let requests = self.page.sheet_requests();
+        if requests.is_empty() {
+            return true;
+        }
+        fetch.0 = net::SheetFetch::start(page_address, requests);
+        false
+    }
+
+    fn apply_sheets(&mut self) {
+        self.page.apply_sheets();
+    }
+
     fn start_image_fetch(&self, page_address: &str) -> Box<ImageFetch> {
         let requests = net::image_requests(page_address, &self.page.image_sources());
         Box::new(ImageFetch(net::ImageFetch::start(page_address, requests)))
@@ -443,6 +480,17 @@ impl PageFetch {
         }
         result
     }
+}
+
+/// The style sheets of a page being read, in a type of this crate as the bridge requires.
+pub struct SheetFetch(net::SheetFetch);
+
+fn open_fetched_page(utf8: &str, address: &str) -> Box<Page> {
+    Box::new(Page {
+        page: page::Page::open_fetched(utf8, address),
+        items: Vec::new(),
+        selection: None,
+    })
 }
 
 /// The images of a page being read, in a type of this crate as the bridge requires.

@@ -3,9 +3,9 @@ Web browser built on the [ron](https://github.com/eudahub/ron) engine, with a wi
 
 The current stage shows pages from files and from the web: blocks with margins, padding, borders and
 backgrounds, wrapped text with fonts, colors, alignment and decorations, list markers, images,
-background images, floats and image maps. Text aims to land where it does in Firefox. Style sheets in
-separate files are not read yet, so most pages on the web show without their design. There are no
-table grids yet, and table parts stack as blocks.
+background images, floats, image maps and style sheets. Text aims to land where it does in Firefox.
+There are no table grids yet, and table parts stack as blocks; flexible and grid layouts stack too,
+so many pages on the web still look quite different from how they should.
 
 ## Links and history
 
@@ -23,16 +23,18 @@ not followed at all. `<base>` is ignored for now.
 
 ## The network
 
-Pages and images are read on threads of their own, so the window goes on, and images show as they
-arrive. HTTPS goes through [rustls](https://github.com/rustls/rustls), with the root certificates
+Pages, style sheets and images are read on threads of their own, so the window goes on. A new page
+shows once its style sheets have come, for at most 10 seconds, and images show as they arrive. HTTPS goes through [rustls](https://github.com/rustls/rustls), with the root certificates
 built in, and a page with a bad certificate does not open: there is no way past it yet. Pages over
 plain HTTP do open, and the status bar says they are not secure.
 
 Requests carry no cookies, no `Referer` and no language. A page on the network cannot link to local
 files, or make the browser reach addresses inside the user's own network, also through a name that
-leads there. A redirect cannot go from HTTPS to HTTP, and a page over HTTPS loads no images over HTTP.
-A page may be up to 64 MB and an image 32 MB, counted after unpacking, and a request 60 seconds. Forms
-are not sent yet, and pages in encodings that cpg-rs lacks, like Shift-JIS, come out wrong.
+leads there. A redirect cannot go from HTTPS to HTTP, and a page over HTTPS loads no images or style
+sheets over HTTP. What a server does not call CSS is not read as a style sheet. A page may be up to
+64 MB, an image 32 MB and a style sheet 16 MB, counted after unpacking, with at most 128 style sheets,
+and a request may take 60 seconds. Style sheets of a local page, like its images, only load from its
+own directory and below it. Forms are not sent yet, and pages in encodings that cpg-rs lacks, like Shift-JIS, come out wrong.
 
 ## Selecting text
 

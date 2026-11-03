@@ -28,12 +28,16 @@ namespace {
 const std::uint8_t underlineBit = 1;
 const std::uint8_t overlineBit = 2;
 const std::uint8_t lineThroughBit = 4;
+// A page shows after this long without the style sheets that have not come by then.
+const qint64 maxSheetWaitMs = 10000;
 
 } // namespace
 
 struct PageView::PageHolder {
     std::optional<rust::Box<ron_browser::Page>> page;
     std::optional<rust::Box<ron_browser::ImageFetch>> imageFetch;
+    std::optional<rust::Box<ron_browser::Page>> incoming;
+    std::optional<rust::Box<ron_browser::SheetFetch>> sheetFetch;
     // Each wraps the decoded pixels on the Rust side, without copying them.
     std::vector<std::optional<QImage>> images;
     std::vector<std::optional<QPixmap>> tiles;
@@ -122,6 +126,54 @@ void PageView::forgetPage()
     imageTimer->stop();
     holder->imageFetch.reset();
     holder->forgetImages();
+}
+
+void PageView::prepareFetchedPage(const std::string &utf8, const QString &address)
+{
+    const QByteArray bytes = address.toUtf8();
+    const rust::Str str(bytes.constData(), static_cast<size_t>(bytes.size()));
+    holder->incoming = ron_browser::open_fetched_page(utf8, str);
+    holder->sheetFetch = (*holder->incoming)->start_sheet_fetch(str);
+    incomingAddress = address;
+    incomingWait.start();
+}
+
+bool PageView::hasIncomingPage() const
+{
+    return holder->incoming.has_value();
+}
+
+bool PageView::incomingPageIsReady()
+{
+    if (!holder->incoming || !holder->sheetFetch) {
+        return true;
+    }
+    const QByteArray bytes = incomingAddress.toUtf8();
+    const rust::Str str(bytes.constData(), static_cast<size_t>(bytes.size()));
+    return (*holder->incoming)->take_sheets(**holder->sheetFetch, str) || incomingWait.elapsed() > maxSheetWaitMs;
+}
+
+void PageView::showIncomingPage()
+{
+    if (!holder->incoming) {
+        return;
+    }
+    forgetPage();
+    holder->sheetFetch.reset();
+    (*holder->incoming)->apply_sheets();
+    holder->page = std::move(holder->incoming);
+    holder->incoming.reset();
+    verticalScrollBar()->setValue(0);
+    horizontalScrollBar()->setValue(0);
+    setHoveredLink(QString());
+    pressedLink.clear();
+    layOut();
+}
+
+void PageView::dropIncomingPage()
+{
+    holder->sheetFetch.reset();
+    holder->incoming.reset();
 }
 
 void PageView::fetchImages(const QString &pageAddress)

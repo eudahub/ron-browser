@@ -21,6 +21,7 @@ use ureq::unversioned::transport::{DefaultConnector, NextTimeout};
 use url::{Host, Url};
 
 use crate::images::{DecodedImage, decode};
+use crate::sheets::{SheetRequest, decode_css};
 
 /// Larger pages are not read to the end, also when they only get this large after unpacking.
 pub const MAX_PAGE_BYTES: u64 = 64 * 1024 * 1024;
@@ -29,8 +30,9 @@ const MAX_REDIRECTS: usize = 10;
 /// How long one fetch may take, with all of its redirects counted apart.
 const TIMEOUT: Duration = Duration::from_secs(60);
 const USER_AGENT: &str = concat!("ron-browser/", env!("CARGO_PKG_VERSION"));
-/// How many images are read at once.
-const IMAGE_THREADS: usize = 4;
+const MAX_SHEET_BYTES: u64 = 16 * 1024 * 1024;
+/// How many images or style sheets are read at once.
+const WORKER_THREADS: usize = 4;
 /// How many images of a page are read.
 const MAX_IMAGES: usize = 2000;
 
@@ -351,41 +353,33 @@ pub fn image_requests(page_address: &str, sources: &[String]) -> Vec<ImageReques
         .collect()
 }
 
-/// The images of a page being read, on threads of their own, as they get there.
-pub struct ImageFetch {
-    waiting: Arc<Mutex<VecDeque<ImageRequest>>>,
-    receiver: Receiver<(String, DecodedImage)>,
+/// A piece of work for [`Workers`].
+type Job<T> = Box<dyn FnOnce() -> Option<T> + Send>;
+
+/// Does jobs on a few threads of their own, and hands over what comes of them as it gets there.
+struct Workers<T> {
+    waiting: Arc<Mutex<VecDeque<Job<T>>>>,
+    receiver: Receiver<T>,
     /// What came while checking whether more would come.
-    arrived: Vec<(String, DecodedImage)>,
+    arrived: Vec<T>,
 }
 
-impl ImageFetch {
-    /// Starts reading images for the page at this address.
-    #[must_use]
-    pub fn start(page_address: &str, requests: Vec<ImageRequest>) -> Self {
-        let threads = IMAGE_THREADS.min(requests.len());
-        let waiting = Arc::new(Mutex::new(VecDeque::from(requests)));
+impl<T: Send + 'static> Workers<T> {
+    fn start(jobs: Vec<Job<T>>) -> Self {
+        let threads = WORKER_THREADS.min(jobs.len());
+        let waiting = Arc::new(Mutex::new(VecDeque::from(jobs)));
         let (sender, receiver) = mpsc::channel();
         for _ in 0..threads {
             let waiting = Arc::clone(&waiting);
             let sender = sender.clone();
-            let page = page_address.to_owned();
             thread::spawn(move || {
                 loop {
                     let next = waiting.lock().ok().and_then(|mut queue| queue.pop_front());
-                    let Some(request) = next else {
+                    let Some(job) = next else {
                         return;
                     };
-                    let image = fetch_limited(
-                        &request.url,
-                        Asker::Page(&page),
-                        "image/*,*/*;q=0.1",
-                        MAX_IMAGE_BYTES,
-                    )
-                    .ok()
-                    .and_then(|fetched| decode(&fetched.bytes));
-                    if let Some(image) = image
-                        && sender.send((request.written, image)).is_err()
+                    if let Some(result) = job()
+                        && sender.send(result).is_err()
                     {
                         return;
                     }
@@ -399,18 +393,17 @@ impl ImageFetch {
         }
     }
 
-    /// The images that have arrived since the last time.
-    pub fn poll(&mut self) -> Vec<(String, DecodedImage)> {
-        let mut images = std::mem::take(&mut self.arrived);
-        images.extend(self.receiver.try_iter());
-        images
+    fn poll(&mut self) -> Vec<T> {
+        let mut results = std::mem::take(&mut self.arrived);
+        results.extend(self.receiver.try_iter());
+        results
     }
 
-    /// Whether every image has been read and taken.
-    pub fn is_done(&mut self) -> bool {
+    /// Whether every job is over and all has been taken.
+    fn is_done(&mut self) -> bool {
         match self.receiver.try_recv() {
-            Ok(image) => {
-                self.arrived.push(image);
+            Ok(result) => {
+                self.arrived.push(result);
                 false
             }
             Err(TryRecvError::Empty) => false,
@@ -419,11 +412,98 @@ impl ImageFetch {
     }
 }
 
-impl Drop for ImageFetch {
+impl<T> Drop for Workers<T> {
     fn drop(&mut self) {
         // What is being read ends by itself; the rest is not read at all.
         if let Ok(mut waiting) = self.waiting.lock() {
             waiting.clear();
         }
+    }
+}
+
+/// The images of a page being read, as they get there.
+pub struct ImageFetch(Workers<(String, DecodedImage)>);
+
+impl ImageFetch {
+    /// Starts reading images for the page at this address.
+    #[must_use]
+    pub fn start(page_address: &str, requests: Vec<ImageRequest>) -> Self {
+        let jobs = requests
+            .into_iter()
+            .map(|request| {
+                let page = page_address.to_owned();
+                let job: Job<(String, DecodedImage)> = Box::new(move || {
+                    let fetched = fetch_limited(
+                        &request.url,
+                        Asker::Page(&page),
+                        "image/*,*/*;q=0.1",
+                        MAX_IMAGE_BYTES,
+                    )
+                    .ok()?;
+                    Some((request.written, decode(&fetched.bytes)?))
+                });
+                job
+            })
+            .collect();
+        Self(Workers::start(jobs))
+    }
+
+    /// The images that have arrived since the last time.
+    pub fn poll(&mut self) -> Vec<(String, DecodedImage)> {
+        self.0.poll()
+    }
+
+    /// Whether every image has been read and taken.
+    pub fn is_done(&mut self) -> bool {
+        self.0.is_done()
+    }
+}
+
+/// The style sheets of a page being read, as they get there, with the text of each.
+pub struct SheetFetch(Workers<(u32, String)>);
+
+impl SheetFetch {
+    /// Starts reading sheets for the page at this address. As with images, a page over `https`
+    /// reads none over `http`, and what the server does not call CSS does not count as such, so
+    /// that nothing else on a server can be made to act as a sheet.
+    #[must_use]
+    pub fn start(page_address: &str, requests: Vec<SheetRequest>) -> Self {
+        let page_url = Url::parse(page_address).ok();
+        let jobs = requests
+            .into_iter()
+            .filter(|request| {
+                let target = Url::parse(&request.location).ok();
+                match (&page_url, &target) {
+                    (Some(page), Some(target)) => may_redirect(page, target),
+                    _ => false,
+                }
+            })
+            .map(|request| {
+                let page = page_address.to_owned();
+                let job: Job<(u32, String)> = Box::new(move || {
+                    let fetched = fetch_limited(
+                        &request.location,
+                        Asker::Page(&page),
+                        "text/css,*/*;q=0.1",
+                        MAX_SHEET_BYTES,
+                    )
+                    .ok()?;
+                    (fetched.mime.is_empty() || fetched.mime == "text/css")
+                        .then(|| (request.slot, decode_css(&fetched.bytes, &fetched.charset)))
+                });
+                job
+            })
+            .collect();
+        Self(Workers::start(jobs))
+    }
+
+    /// The sheets that have arrived since the last time.
+    pub fn poll(&mut self) -> Vec<(u32, String)> {
+        self.0.poll()
+    }
+
+    /// Whether every sheet has been read and taken.
+    pub fn is_done(&mut self) -> bool {
+        self.0.is_done()
     }
 }
