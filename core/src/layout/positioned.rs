@@ -257,6 +257,8 @@ fn cut(item: &mut Item, area: &Item, clip: &mut Option<ClipArea>) -> bool {
 /// Puts layers in order, and finds which is within which, as ranges either nest or stand apart. Gives
 /// the place in the order of drawing of what is in none of them.
 pub(super) fn order_layers(layers: &mut [PaintLayer]) -> u32 {
+    // A box ends after those within it, and it comes first among those that hold the same.
+    layers.reverse();
     layers.sort_by_key(|layer| (layer.start, std::cmp::Reverse(layer.end)));
     let mut open: Vec<u32> = Vec::new();
     for index in 0..layers.len() {
