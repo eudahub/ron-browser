@@ -2160,7 +2160,7 @@ impl Layouter<'_> {
         self.push_borders(self.styles.get(node), frame.x, top, frame.width, bottom);
         self.out.width = self.out.width.max(frame.x + frame.width);
         self.finish_span(&frame, top, bottom);
-        self.shift_relative(&frame);
+        self.shift_relative(&frame, bottom - top);
         if let Some(saved) = frame.inline_return {
             self.close_inline_box(node, *saved, (frame.x, frame.width), (top, bottom));
             return;

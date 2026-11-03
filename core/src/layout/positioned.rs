@@ -24,7 +24,18 @@ pub(super) fn is_out_of_flow(style: &ComputedStyle) -> bool {
 }
 
 fn goes_above(style: &ComputedStyle) -> bool {
-    style.position != Position::Static && style.position != Position::Sticky
+    (style.position != Position::Static && style.position != Position::Sticky)
+        || style.transform.is_some()
+}
+
+/// How far a box of this size is moved by its `transform`. Percentages are of its own size.
+pub(super) fn translation(style: &ComputedStyle, width: f32, height: f32) -> (f32, f32) {
+    style.transform.map_or((0.0, 0.0), |(across, down)| {
+        (
+            resolve(across, width).unwrap_or(0.0),
+            resolve(down, height).unwrap_or(0.0),
+        )
+    })
 }
 
 /// Whether a box hides what goes beyond it. Boxes that scroll cannot do that yet, as there would be no
@@ -300,30 +311,30 @@ impl Layouter<'_> {
     }
 
     /// Shifts a relative box from where it is, which leaves its place in the flow as it was.
-    pub(super) fn shift_relative(&mut self, frame: &Frame) {
+    pub(super) fn shift_relative(&mut self, frame: &Frame, height: f32) {
         let Some(span) = &frame.span else {
             return;
         };
         let style = self.styles.get(frame.node);
-        if style.position != Position::Relative {
-            return;
+        let (mut dx, mut dy) = translation(style, frame.width, height);
+        if style.position == Position::Relative {
+            let whole = self
+                .frames
+                .last()
+                .map_or(frame.width, |parent| parent.content_width);
+            let offsets = style.offsets;
+            dx += resolve(offsets.left, whole)
+                .or_else(|| resolve(offsets.right, whole).map(|right| -right))
+                .unwrap_or(0.0);
+            // A percentage of a height that is not known counts as nothing.
+            let down = |size: Size| match size {
+                Size::Px(px) => Some(px),
+                _ => None,
+            };
+            dy += down(offsets.top)
+                .or_else(|| down(offsets.bottom).map(|bottom| -bottom))
+                .unwrap_or(0.0);
         }
-        let whole = self
-            .frames
-            .last()
-            .map_or(frame.width, |parent| parent.content_width);
-        let offsets = style.offsets;
-        let dx = resolve(offsets.left, whole)
-            .or_else(|| resolve(offsets.right, whole).map(|right| -right))
-            .unwrap_or(0.0);
-        // A percentage of a height that is not known counts as nothing.
-        let down = |size: Size| match size {
-            Size::Px(px) => Some(px),
-            _ => None,
-        };
-        let dy = down(offsets.top)
-            .or_else(|| down(offsets.bottom).map(|bottom| -bottom))
-            .unwrap_or(0.0);
         if dx != 0.0 || dy != 0.0 {
             let ranges = [
                 span.items..self.out.items.len(),
@@ -342,7 +353,10 @@ impl Layouter<'_> {
         }
         self.frames
             .iter()
-            .rposition(|frame| self.styles.get(frame.node).position != Position::Static)
+            .rposition(|frame| {
+                let around = self.styles.get(frame.node);
+                around.position != Position::Static || around.transform.is_some()
+            })
             .filter(|&index| index > 0)
             .unwrap_or(0)
     }
@@ -593,29 +607,25 @@ impl Layouter<'_> {
             (None, Some(bottom)) => inside_top + inside_height - bottom - margin_bottom - height,
             (None, None) => from,
         };
+        let (across, moved_down) = translation(style, pending.width, height);
+        let target = target + moved_down;
+        let x = pending.x + across;
         let down = target - from;
-        if down != 0.0 {
-            self.move_ranges(pending.ranges, 0.0, down);
+        if down != 0.0 || across != 0.0 {
+            self.move_ranges(pending.ranges, across, down);
         }
         if let Some(index) = pending.background_item {
             self.out.items[index].height = height;
         }
         if !pending.is_plain {
             if let Some(index) = pending.background_tile {
-                self.finish_background_tile(
-                    pending.node,
-                    index,
-                    pending.x,
-                    target,
-                    pending.width,
-                    height,
-                );
+                self.finish_background_tile(pending.node, index, x, target, pending.width, height);
             }
             if pending.borders_wait {
-                self.push_borders(style, pending.x, target, pending.width, target + height);
+                self.push_borders(style, x, target, pending.width, target + height);
             }
         }
-        self.out.width = self.out.width.max(pending.x + pending.width);
+        self.out.width = self.out.width.max(x + pending.width);
         self.lowest_positioned = self.lowest_positioned.max(target + height + margin_bottom);
     }
 }

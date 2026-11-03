@@ -18,7 +18,7 @@ use ron::css::{
 use ron::html::{NodeId, NodeKind, Tag};
 
 use self::grid::GridPlan;
-use super::positioned::is_out_of_flow;
+use super::positioned::{is_out_of_flow, translation};
 use super::{
     BoxSides, Frame, InlineReturn, Layouter, MAX_NESTED_LAYOUTS, Margin, is_replaced, resolve,
 };
@@ -1066,11 +1066,19 @@ impl Layouter<'_> {
 
     /// Puts an item at its place and height, and draws what depends on that.
     fn place_item(&mut self, item: LaidItem, top: f32, height: f32) {
+        // Text has the style of what is around it, and so nothing of its own to move it.
+        let (across, moved_down) = if item.is_plain {
+            (0.0, 0.0)
+        } else {
+            translation(self.styles.get(item.node), item.width, height)
+        };
+        let top = top + moved_down;
+        let x = item.x + across;
         let down = top - item.top;
-        if down != 0.0 {
+        if down != 0.0 || across != 0.0 {
             self.move_ranges(
                 [item.items, item.lines, item.link_areas, item.area_shapes],
-                0.0,
+                across,
                 down,
             );
         }
@@ -1085,11 +1093,11 @@ impl Layouter<'_> {
         }
         if !item.is_plain {
             if let Some(index) = item.background_tile {
-                self.finish_background_tile(item.node, index, item.x, top, item.width, height);
+                self.finish_background_tile(item.node, index, x, top, item.width, height);
             }
-            self.push_borders(self.styles.get(item.node), item.x, top, item.width, bottom);
+            self.push_borders(self.styles.get(item.node), x, top, item.width, bottom);
         }
-        self.out.width = self.out.width.max(item.x + item.width);
+        self.out.width = self.out.width.max(x + item.width);
     }
 }
 

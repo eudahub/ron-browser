@@ -350,6 +350,102 @@ fn inset_sets_all_sides() {
 }
 
 #[test]
+fn a_transform_moves_a_box_and_leaves_its_place() {
+    let layout = show(
+        "<div style='transform:translate(10px, 20px);width:100px;height:50px'>a</div><p>after</p>",
+    );
+    let a = text(&layout, "a");
+    assert_eq!((a.x, a.y), (10.0, 20.0));
+    assert_eq!(text(&layout, "after").y, 50.0);
+    let across = show("<div style='transform:translateX(30px)'>a</div>");
+    assert_eq!(text(&across, "a").x, 30.0);
+    let down = show("<div style='transform:translateY(30px)'>a</div>");
+    assert_eq!(text(&down, "a").y, 30.0);
+    let matrix = show("<div style='transform:matrix(1, 0, 0, 1, 7, 8)'>a</div>");
+    assert_eq!((text(&matrix, "a").x, text(&matrix, "a").y), (7.0, 8.0));
+    let both = show("<div style='transform:translateX(5px) translateX(6px) rotate(1deg)'>a</div>");
+    assert_eq!(text(&both, "a").x, 11.0);
+}
+
+#[test]
+fn percentages_of_a_transform_are_of_the_box_itself() {
+    let centered = show(
+        "<div style='position:relative;width:400px;height:400px'>\
+         <div style='position:absolute;left:50%;top:50%;width:100px;height:60px;\
+         transform:translate(-50%, -50%);background:red'></div></div>",
+    );
+    let shape = filled(&centered)[0];
+    assert_eq!((shape.x, shape.y), (150.0, 170.0));
+    let mixed = show(
+        "<div style='width:100px;background:red;transform:translateX(calc(50% + 10px))'>x</div>",
+    );
+    assert_eq!(filled(&mixed)[0].x, 60.0);
+}
+
+#[test]
+fn a_menu_pushed_off_the_page_covers_nothing() {
+    let layout = show(
+        "<div style='position:fixed;top:0;left:0;bottom:0;width:320px;background:white;\
+         transform:translateX(-100%)'>menu</div><p>seen</p>",
+    );
+    let shape = filled(&layout)[0];
+    assert_eq!(shape.x + shape.width, 0.0);
+    assert_eq!(text(&layout, "menu").x, -320.0);
+    assert_eq!(layout.width, 800.0);
+}
+
+#[test]
+fn a_transform_counts_as_positioned_for_what_is_inside_and_on_top() {
+    let inside = show(
+        "<div style='margin-left:50px;transform:translateX(0)'>\
+         <div style='position:absolute;left:5px;top:5px'>a</div></div>",
+    );
+    assert_eq!(text(&inside, "a").x, 55.0);
+    let on_top = show("<div style='transform:scale(2)'>first</div><p>second</p>");
+    assert_eq!(drawn_text(&on_top), ["second", "first"]);
+    let none = show("<div style='transform:none'>first</div><p>second</p>");
+    assert_eq!(drawn_text(&none), ["first", "second"]);
+}
+
+#[test]
+fn a_transform_moves_items_of_flexible_boxes_and_links_too() {
+    let layout = show(
+        "<div style='display:flex'><a href=there style='transform:translate(100px,100px);background:red'>x</a><div>b</div></div>",
+    );
+    let x = text(&layout, "x");
+    assert_eq!((x.x, x.y), (100.0, 100.0));
+    assert_eq!(filled(&layout)[0].x, 100.0);
+    assert_eq!(text(&layout, "b").x, 8.0);
+    assert_eq!(layout.link_at(104.0, 108.0), Some("there"));
+}
+
+#[test]
+fn nonsense_in_a_transform_is_dropped() {
+    for value in [
+        "rubbish",
+        "translate",
+        "translate(",
+        "translate(1foo)",
+        "translate(1px) x",
+    ] {
+        let layout = show(&format!(
+            "<style>div{{transform:translate(9px);transform:{value}}}</style><div>a</div>"
+        ));
+        assert_eq!(text(&layout, "a").x, 9.0, "{value}");
+    }
+}
+
+#[test]
+fn what_is_closed_shows_only_its_summary() {
+    let closed = show("<details><summary>menu</summary><ul><li>inside</ul></details>");
+    assert_eq!(drawn_text(&closed), ["menu"]);
+    let open = show("<details open><summary>menu</summary><p>inside</p></details>");
+    assert_eq!(drawn_text(&open), ["menu", "inside"]);
+    let dialog = show("<dialog><p>closed</p></dialog><dialog open><p>shown</p></dialog>");
+    assert_eq!(drawn_text(&dialog), ["shown"]);
+}
+
+#[test]
 fn links_go_with_a_box() {
     let layout =
         show("<div style='position:absolute;left:100px;top:100px'><a href=there>x</a></div>");
