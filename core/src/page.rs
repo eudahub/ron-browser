@@ -612,8 +612,9 @@ impl Page {
             // Conditions and lengths can depend on the size of the view. When conditions do not
             // change, at most a few styles do, and going through all rules is most of what a new
             // width would cost.
-            let same_conditions =
-                self.arriving.is_none() && self.sheets.hold_alike(self.viewport, viewport);
+            let same_conditions = self.arriving.is_none()
+                && self.sheets.hold_alike(self.viewport, viewport)
+                && self.styles.conditions_hold_alike(self.viewport, viewport);
             let same_lengths = !self.styles.depend_on_view(
                 viewport.width != self.viewport.width,
                 viewport.height != self.viewport.height,
