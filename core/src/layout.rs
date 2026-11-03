@@ -792,6 +792,51 @@ fn resolve(size: Size, whole: f32) -> Option<f32> {
     }
 }
 
+/// Whether an element shows as a picture of a size, rather than through what it holds.
+fn is_picture(document: &Document, id: NodeId) -> bool {
+    matches!(document.tag(id), Tag::Img | Tag::Svg)
+}
+
+/// The size that an `<svg>` says it has, by itself. With only a shape, it takes the room there is.
+fn svg_size(document: &Document, id: NodeId, available: f32) -> (f32, f32) {
+    let attribute = |name: &str| {
+        document
+            .attributes(id)
+            .find(|attribute| attribute.name.eq_ignore_ascii_case(name))
+            .map(|attribute| attribute.decoded_value().into_owned())
+    };
+    let pixels = |name: &str| {
+        attribute(name).and_then(|value| {
+            let value = value.trim();
+            let number = value.strip_suffix("px").unwrap_or(value);
+            number
+                .parse::<f32>()
+                .ok()
+                .filter(|size| size.is_finite() && *size >= 0.0)
+        })
+    };
+    let shape = attribute("viewBox").and_then(|view| {
+        let numbers: Vec<f32> = view
+            .split(|c: char| c.is_ascii_whitespace() || c == ',')
+            .filter(|part| !part.is_empty())
+            .filter_map(|part| part.parse().ok())
+            .collect();
+        match numbers.as_slice() {
+            [_, _, width, height] if *width > 0.0 && *height > 0.0 => Some((*width, *height)),
+            _ => None,
+        }
+    });
+    match (pixels("width"), pixels("height"), shape) {
+        (Some(width), Some(height), _) => (width, height),
+        (Some(width), None, Some((w, h))) => (width, width * h / w),
+        (None, Some(height), Some((w, h))) => (height * w / h, height),
+        (None, None, Some((w, h))) => (available, available * h / w),
+        (Some(width), None, None) => (width, 150.0),
+        (None, Some(height), None) => (300.0, height),
+        (None, None, None) => (300.0, 150.0),
+    }
+}
+
 /// Elements drawn from something else, apart from images, which there is no support for yet. Their content is
 /// a fallback for browsers that lack them, or not for showing at all.
 fn is_replaced(document: &Document, id: NodeId) -> bool {
@@ -987,7 +1032,7 @@ impl Layouter<'_> {
         }
         self.note_link_and_anchor(id);
         if out_of_flow {
-            if style.text_decoration != 0 && self.document.tag(id) != Tag::Img {
+            if style.text_decoration != 0 && !is_picture(self.document, id) {
                 let all = self.current_decoration() | style.text_decoration;
                 self.decorations.push((id, all));
             }
@@ -998,11 +1043,11 @@ impl Layouter<'_> {
             return goes_on;
         }
         let in_flex_structure = self.in_flex_structure();
-        if self.document.tag(id) == Tag::Img && !in_flex_structure {
+        if is_picture(self.document, id) && !in_flex_structure {
             self.add_image(id, style);
             return false;
         }
-        if style.text_decoration != 0 && self.document.tag(id) != Tag::Img {
+        if style.text_decoration != 0 && !is_picture(self.document, id) {
             let all = self.current_decoration() | style.text_decoration;
             self.decorations.push((id, all));
         }
@@ -1767,7 +1812,7 @@ impl Layouter<'_> {
                         && !positioned::is_out_of_flow(style)
                     {
                         let sides = BoxSides::of(style, 0.0);
-                        if document.tag(node) == Tag::Img {
+                        if is_picture(document, node) {
                             // A floating image also wants its room beside the text.
                             let (width, _) = self.image_size(node, style, 0.0);
                             line += space + width + sides.horizontal();
@@ -1916,9 +1961,13 @@ impl Layouter<'_> {
     fn image_size(&self, id: NodeId, style: &ComputedStyle, available: f32) -> (f32, f32) {
         let natural = self.image_of(id).and_then(|number| self.images.get(number));
         #[allow(clippy::cast_precision_loss)]
-        let (own_width, own_height) = natural.map_or((0.0, 0.0), |image| {
-            (image.width as f32, image.height as f32)
-        });
+        let (own_width, own_height) = if self.document.tag(id) == Tag::Svg {
+            svg_size(self.document, id, available)
+        } else {
+            natural.map_or((0.0, 0.0), |image| {
+                (image.width as f32, image.height as f32)
+            })
+        };
         let width = resolve(style.width, available);
         let height = match style.height {
             Size::Px(px) => Some(px),

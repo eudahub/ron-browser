@@ -12,10 +12,11 @@
 use std::ops::Range;
 
 use ron::css::{ComputedStyle, Overflow, Position, Size};
-use ron::html::{NodeId, Tag};
+use ron::html::NodeId;
 
 use super::{
-    BoxSides, Color, Frame, InlineReturn, Item, ItemKind, Layout, Layouter, Margin, resolve,
+    BoxSides, Color, Frame, InlineReturn, Item, ItemKind, Layout, Layouter, Margin, is_picture,
+    resolve,
 };
 
 /// Whether a box is taken out of the flow.
@@ -381,7 +382,7 @@ impl Layouter<'_> {
         let sides = BoxSides::of(style, inside_width);
         let left = resolve(style.offsets.left, inside_width);
         let right = resolve(style.offsets.right, inside_width);
-        let is_image = self.document.tag(id) == Tag::Img;
+        let is_image = is_picture(self.document, id);
         let insets = sides.insets();
         let margins = sides.margin_left + sides.margin_right;
         let room =

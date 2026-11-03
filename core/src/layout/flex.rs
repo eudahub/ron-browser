@@ -15,12 +15,13 @@ use ron::css::{
     BoxSizing, ComputedStyle, Display, FlexAlign, FlexDirection, FlexWrap, JustifyContent,
     Overflow, Size, WhiteSpace,
 };
-use ron::html::{NodeId, NodeKind, Tag};
+use ron::html::{NodeId, NodeKind};
 
 use self::grid::GridPlan;
 use super::positioned::{is_out_of_flow, translation};
 use super::{
-    BoxSides, Frame, InlineReturn, Layouter, MAX_NESTED_LAYOUTS, Margin, is_replaced, resolve,
+    BoxSides, Frame, InlineReturn, Layouter, MAX_NESTED_LAYOUTS, Margin, is_picture, is_replaced,
+    resolve,
 };
 
 /// Whether a display makes an element a flexible box.
@@ -310,7 +311,7 @@ impl Layouter<'_> {
                         continue;
                     }
                     let sides = BoxSides::of(style, 0.0).horizontal();
-                    if document.tag(child) == Tag::Img {
+                    if is_picture(document, child) {
                         let (width, _) = self.image_size(child, style, 0.0);
                         (ItemKind::Image, width, width, sides)
                     } else {
@@ -752,7 +753,7 @@ impl Layouter<'_> {
             return false;
         };
         let mut saved = self.saved_for_item();
-        if self.document.tag(id) == Tag::Img {
+        if is_picture(self.document, id) {
             let sides = BoxSides::of(style, place.width);
             let x = place.x - sides.margin_left;
             let width = place.width + sides.margin_left + sides.margin_right;
