@@ -3,9 +3,13 @@ Web browser built on the [ron](https://github.com/eudahub/ron) engine, with a wi
 
 The current stage shows pages from files and from the web: blocks with margins, padding, borders and
 backgrounds, wrapped text with fonts, colors, alignment and decorations, list markers, images,
-background images, floats, inline blocks, tables, flexible boxes, positioned boxes, image maps and style
-sheets. Text aims to land where it does in Firefox. Grid layouts stack as blocks, so many pages on the web
-still look quite different from how they should. Form controls do not draw yet.
+background images, floats, inline blocks, tables, flexible boxes, grids, positioned boxes, image maps and
+style sheets. Text aims to land where it does in Firefox. Form controls do not draw yet, and scripts do not
+run, so many pages on the web still look quite different from how they should.
+
+Grids show once all of them has come, and do not have `grid-auto-flow: column`, `dense`, `grid-auto-columns`,
+named lines other than those of areas, subgrids or the `grid` and `grid-template` shorthands.
+`examples/grid.html` shows what they can do.
 
 Fixed boxes go by the first screen and scroll with the page, and sticky ones stay in the flow. All `z-index`
 values count together, without stacking contexts. Inline text cannot be shifted with `position: relative`,

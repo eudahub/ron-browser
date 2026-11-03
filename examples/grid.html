@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Grids</title>
+<style>
+  body { font-family: sans-serif; margin: 20px; max-width: 860px; }
+  h2 { font-size: 17px; margin: 26px 0 8px; }
+  .grid { display: grid; gap: 8px; background: #eef1f6; padding: 8px; }
+  .grid > div { background: #fff; border: 1px solid #889; padding: 6px 10px; }
+  .page {
+    display: grid; gap: 8px; min-height: 260px;
+    grid-template-columns: 140px 1fr 110px;
+    grid-template-rows: auto 1fr auto;
+    grid-template-areas: "head head head" "menu main side" "foot foot foot";
+  }
+  .page > div { padding: 8px; }
+  .head { grid-area: head; background: #24324a; color: #fff; }
+  .menu { grid-area: menu; background: #e8f3e8; }
+  .main { grid-area: main; background: #f4f4fb; }
+  .side { grid-area: side; background: #fff7e6; }
+  .foot { grid-area: foot; background: #dde4ee; }
+</style>
+</head>
+<body>
+<h1>Grids</h1>
+
+<h2>Sizes: pixels, shares of what is left, and what the content wants</h2>
+<div class="grid" style="grid-template-columns: 120px 1fr 2fr max-content">
+  <div>120px</div><div>1fr</div><div>2fr</div><div>max-content</div>
+</div>
+
+<h2>Items span columns and rows</h2>
+<div class="grid" style="grid-template-columns: repeat(4, 1fr)">
+  <div style="grid-column: span 2; background: #ffe9c7">two columns</div>
+  <div>one</div>
+  <div style="grid-row: span 2; background: #d9f2d9">two rows, as high as what is beside it</div>
+  <div>one</div><div>one</div><div>one</div>
+  <div style="grid-column: 1 / -1; background: #dfe7ff">from the first line to the last</div>
+</div>
+
+<h2>As many as fit: repeat(auto-fill, minmax(150px, 1fr))</h2>
+<div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(150px, 1fr))">
+  <div>first</div><div>second</div><div>third</div><div>fourth</div><div>fifth</div><div>sixth</div><div>seventh</div>
+</div>
+
+<h2>A page drawn in grid-template-areas</h2>
+<div class="page">
+  <div class="main">The main part is written first in the file, and goes where the picture says.</div>
+  <div class="head">The head, over all three columns</div>
+  <div class="menu">A menu</div>
+  <div class="side">At the side</div>
+  <div class="foot">The foot, which stays at the bottom, as the middle row takes what is left</div>
+</div>
+
+<h2>Alignment within cells</h2>
+<div class="grid" style="grid-template-columns: repeat(3, 1fr); grid-auto-rows: 70px">
+  <div style="justify-self: start; align-self: start">start</div>
+  <div style="justify-self: center; align-self: center">center</div>
+  <div style="justify-self: end; align-self: end">end</div>
+</div>
+</body>
+</html>

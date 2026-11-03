@@ -6,7 +6,7 @@
 //! not the geometry. List markers live apart from it, so they cannot be selected.
 //!
 //! Floats take their place at the side, and lines of text go around them. Tables are in
-//! [`table`], flexible boxes in [`flex`] and positioned boxes in [`positioned`].
+//! [`table`], flexible boxes and grids in [`flex`] and positioned boxes in [`positioned`].
 
 mod flex;
 mod positioned;

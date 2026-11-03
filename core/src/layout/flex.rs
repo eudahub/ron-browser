@@ -5,6 +5,8 @@
 //! Not handled: columns that wrap, `align-content`, which counts as stretching, and baselines, which
 //! count as the start. Only widths are shrunk, so a column that is too high runs over.
 
+mod grid;
+
 use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
@@ -15,6 +17,7 @@ use ron::css::{
 };
 use ron::html::{NodeId, NodeKind, Tag};
 
+use self::grid::GridPlan;
 use super::positioned::is_out_of_flow;
 use super::{
     BoxSides, Frame, InlineReturn, Layouter, MAX_NESTED_LAYOUTS, Margin, is_replaced, resolve,
@@ -22,7 +25,15 @@ use super::{
 
 /// Whether a display makes an element a flexible box.
 pub(super) fn is_flex(display: Display) -> bool {
-    matches!(display, Display::Flex | Display::InlineFlex)
+    matches!(
+        display,
+        Display::Flex | Display::InlineFlex | Display::Grid | Display::InlineGrid
+    )
+}
+
+/// Whether it is a grid, which goes on from here with [`super::grid`].
+fn is_grid(display: Display) -> bool {
+    matches!(display, Display::Grid | Display::InlineGrid)
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -85,6 +96,8 @@ pub(super) struct FlexState {
     /// The items of each line, by node, in the order that they show.
     lines: Vec<Vec<usize>>,
     laid: HashMap<usize, LaidItem>,
+    /// What else there is to know when it is a grid.
+    grid: Option<GridPlan>,
 }
 
 /// What an item is across its box, as worked out from its style and the room there is.
@@ -331,11 +344,15 @@ impl Layouter<'_> {
                 least += gaps;
             }
         }
-        FlexContent {
+        let mut content = FlexContent {
             items,
             least,
             wanted,
+        };
+        if is_grid(style.display) {
+            (content.least, content.wanted) = self.grid_widths(style, &content);
         }
+        content
     }
 
     /// How narrow and how wide a flexible box can be.
@@ -432,18 +449,24 @@ impl Layouter<'_> {
             ItemKind::Text => 0,
             _ => self.styles.get(content.items[index].node).order,
         });
-        let (places, lines) = if is_row {
+        let mut grid = None;
+        let (places, lines) = if is_grid(style.display) {
+            let (places, plan) = self.plan_grid(style, &content, &order, left, room);
+            grid = Some(plan);
+            (places.into_iter().collect(), Vec::new())
+        } else if is_row {
             self.plan_row(style, &content, &order, left, room)
         } else {
             self.plan_column(style, &content, &order, left, room)
         };
         self.flexes.push(FlexState {
             node: id,
-            is_row,
+            is_row: is_row && grid.is_none(),
             top,
             places,
             lines,
             laid: HashMap::with_capacity(content.items.len()),
+            grid,
         });
     }
 
@@ -826,7 +849,9 @@ impl Layouter<'_> {
         let height = frame
             .height
             .or((frame.min_height > 0.0).then_some(frame.min_height));
-        let bottom = if flex.is_row {
+        let bottom = if flex.grid.is_some() {
+            self.place_grid(&mut flex, style, height)
+        } else if flex.is_row {
             self.place_row_lines(&mut flex, style, height)
         } else {
             self.place_column(&mut flex, style, height)
