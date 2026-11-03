@@ -2,12 +2,12 @@
 //! lines 16 high, as in the layout tests.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use ron_browser_core::history::History;
 use ron_browser_core::images::{DecodedImage, ImageStore, NoResources};
 use ron_browser_core::layout::{FontSpec, TextMeasurer};
-use ron_browser_core::links::{Target, resolve};
+use ron_browser_core::links::{Target, file_address, local_path, resolve, resolve_address};
 use ron_browser_core::page::Page;
 
 #[derive(Default)]
@@ -68,8 +68,8 @@ impl TempDir {
         }
         Self(path.canonicalize().unwrap())
     }
-    fn page(&self) -> PathBuf {
-        self.0.join("site/page.html")
+    fn page(&self) -> String {
+        file_address(&self.0.join("site/page.html")).unwrap()
     }
     fn file(&self, name: &str) -> PathBuf {
         self.0.join(name)
@@ -84,7 +84,14 @@ impl Drop for TempDir {
 
 fn opens(path: PathBuf, fragment: &str) -> Target {
     Target::Page {
-        path,
+        url: file_address(&path).unwrap(),
+        fragment: fragment.to_owned(),
+    }
+}
+
+fn goes_to(url: &str, fragment: &str) -> Target {
+    Target::Page {
+        url: url.to_owned(),
         fragment: fragment.to_owned(),
     }
 }
@@ -112,13 +119,13 @@ fn links_lead_to_local_pages() {
             "{href}"
         );
     }
-    let absolute = format!("file://{}", dir.file("other.htm").display());
+    let absolute = file_address(&dir.file("other.htm")).unwrap();
     assert_eq!(resolve(&page, &absolute), opens(dir.file("other.htm"), ""));
 }
 
 #[test]
 fn a_link_within_the_page_stays_there() {
-    let page = Path::new("/nowhere/page.html");
+    let page = "file:///nowhere/page.html";
     for (href, fragment) in [("#part", "part"), ("#", ""), ("", ""), ("?a=1", "")] {
         assert_eq!(
             resolve(page, href),
@@ -136,11 +143,11 @@ fn only_pages_open() {
     let page = dir.page();
     assert_eq!(
         resolve(&page, "photo.jpg"),
-        Target::NotAPage(dir.file("site/photo.jpg"))
+        Target::NotAPage(dir.file("site/photo.jpg").display().to_string())
     );
     assert_eq!(
         resolve(&page, "empty"),
-        Target::NotAPage(dir.file("site/empty"))
+        Target::NotAPage(dir.file("site/empty").display().to_string())
     );
     assert_eq!(
         resolve(&page, "/etc/passwd"),
@@ -150,27 +157,130 @@ fn only_pages_open() {
         resolve(&page, "file:///etc/passwd"),
         Target::NotAPage("/etc/passwd".into())
     );
-    assert_eq!(resolve(&page, "missing.html"), Target::Missing);
-    assert_eq!(resolve(&page, "next.HTM%00.txt"), Target::Missing);
+    assert!(matches!(resolve(&page, "missing.html"), Target::Missing(_)));
+    assert!(matches!(
+        resolve(&page, "next.HTM%00.txt"),
+        Target::Missing(_)
+    ));
 }
 
 #[test]
-fn what_is_elsewhere_is_only_named() {
-    let page = Path::new("/nowhere/page.html");
-    for href in [
-        "http://example.com/a",
-        "HTTPS://example.com/",
-        "ftp://example.com/",
-        "mailto:a@example.com",
-        "//example.com/a",
+fn links_can_lead_to_the_network() {
+    let page = "file:///nowhere/page.html";
+    assert_eq!(
+        resolve(page, "http://example.com/a#b"),
+        goes_to("http://example.com/a", "b")
+    );
+    assert_eq!(
+        resolve(page, "HTTPS://example.com/"),
+        goes_to("https://example.com/", "")
+    );
+    let remote = "https://example.com/dir/page.html?x=1";
+    for (href, url, fragment) in [
+        ("other.html", "https://example.com/dir/other.html", ""),
+        ("../up.html#a", "https://example.com/up.html", "a"),
+        ("/top", "https://example.com/top", ""),
+        ("//other.org/a", "https://other.org/a", ""),
+        ("?y=2", "https://example.com/dir/page.html?y=2", ""),
     ] {
-        assert_eq!(resolve(page, href), Target::External(href.to_owned()));
+        assert_eq!(resolve(remote, href), goes_to(url, fragment), "{href}");
+    }
+    for (href, fragment) in [("#z", "z"), ("?x=1#z", "z")] {
+        assert_eq!(
+            resolve(remote, href),
+            Target::SamePage {
+                fragment: fragment.to_owned()
+            },
+            "{href}"
+        );
     }
 }
 
 #[test]
+fn what_is_not_handled_is_only_named() {
+    let page = "file:///nowhere/page.html";
+    for href in ["ftp://example.com/", "mailto:a@example.com", "tel:123"] {
+        assert!(
+            matches!(resolve(page, href), Target::Unsupported(_)),
+            "{href}"
+        );
+    }
+}
+
+#[test]
+fn a_page_on_the_network_cannot_reach_local_files() {
+    for href in ["file:///etc/passwd", "file:///home/a.html", "FILE:/x.html"] {
+        let target = resolve("https://example.com/", href);
+        assert!(matches!(target, Target::Refused(_)), "{href}: {target:?}");
+    }
+    // Neither through a path, which stays on the server.
+    assert_eq!(
+        resolve("https://example.com/a/b", "/etc/passwd"),
+        goes_to("https://example.com/etc/passwd", "")
+    );
+}
+
+#[test]
+fn addresses_can_be_typed() {
+    let dir = TempDir::new("addresses");
+    let page = dir.file("site/page.html");
+    assert_eq!(
+        resolve_address(&page.display().to_string()),
+        opens(page.clone(), "")
+    );
+    assert_eq!(resolve_address(&dir.page()), opens(page.clone(), ""));
+    assert_eq!(
+        resolve_address(&format!("{}#part", dir.page())),
+        opens(page, "part")
+    );
+    // Unlike through a link, the user can open what is not a page.
+    assert_eq!(
+        resolve_address(&dir.file("site/photo.jpg").display().to_string()),
+        opens(dir.file("site/photo.jpg"), "")
+    );
+    for (typed, url, fragment) in [
+        ("example.com", "https://example.com/", ""),
+        (" example.com/a#b ", "https://example.com/a", "b"),
+        ("example.com:8080/a", "https://example.com:8080/a", ""),
+        ("https://example.com", "https://example.com/", ""),
+        ("http://example.com", "http://example.com/", ""),
+        ("localhost:8080", "http://localhost:8080/", ""),
+        ("127.0.0.1:8080/a", "http://127.0.0.1:8080/a", ""),
+    ] {
+        assert_eq!(resolve_address(typed), goes_to(url, fragment), "{typed}");
+    }
+    assert!(matches!(resolve_address(""), Target::Missing(_)));
+    assert!(matches!(
+        resolve_address("/no/such/file.html"),
+        Target::Missing(_)
+    ));
+    for typed in ["javascript:alert(1)", "data:text/html,x", "about:blank"] {
+        assert!(
+            matches!(resolve_address(typed), Target::Refused(_)),
+            "{typed}"
+        );
+    }
+    assert!(matches!(
+        resolve_address("mailto:a@example.com"),
+        Target::Unsupported(_)
+    ));
+}
+
+#[test]
+fn addresses_of_local_files_go_both_ways() {
+    let dir = TempDir::new("both");
+    let page = dir.file("site/with space.html");
+    let address = file_address(&page).unwrap();
+    assert!(address.starts_with("file:///"));
+    assert!(address.ends_with("with%20space.html"));
+    assert_eq!(local_path(&address), Some(page));
+    assert_eq!(local_path("https://example.com/a"), None);
+    assert_eq!(local_path("not an address"), None);
+}
+
+#[test]
 fn dangerous_schemes_are_not_followed() {
-    let page = Path::new("/nowhere/page.html");
+    let page = "file:///nowhere/page.html";
     for href in [
         "javascript:alert(1)",
         " JaVaScRiPt:alert(1)",
@@ -180,9 +290,11 @@ fn dangerous_schemes_are_not_followed() {
         "about:blank",
         "chrome://settings",
         "file://example.com/etc/passwd",
+        "//example.com/a",
         "c:/windows/a.htm",
     ] {
-        assert_eq!(resolve(page, href), Target::Refused, "{href}");
+        let target = resolve(page, href);
+        assert!(matches!(target, Target::Refused(_)), "{href}: {target:?}");
     }
 }
 
@@ -347,11 +459,11 @@ fn history_goes_back_and_forward() {
     assert!(history.go_back());
     assert_eq!(history.current().unwrap().fragment, "");
     assert!(history.go_back());
-    assert_eq!(history.current().unwrap().path, "a");
+    assert_eq!(history.current().unwrap().address, "a");
     assert_eq!(history.current().unwrap().scroll_y, 100);
     assert!(!history.go_back());
     assert!(history.go_forward());
-    assert_eq!(history.current().unwrap().path, "b");
+    assert_eq!(history.current().unwrap().address, "b");
 }
 
 #[test]
@@ -363,7 +475,7 @@ fn going_somewhere_new_forgets_what_was_ahead() {
     history.visit("c", "");
     assert!(!history.can_go_forward());
     history.go_back();
-    assert_eq!(history.current().unwrap().path, "a");
+    assert_eq!(history.current().unwrap().address, "a");
 }
 
 #[test]
@@ -385,5 +497,5 @@ fn history_does_not_grow_without_end() {
         steps += 1;
     }
     assert_eq!(steps, 999);
-    assert_eq!(history.current().unwrap().path, "4000");
+    assert_eq!(history.current().unwrap().address, "4000");
 }

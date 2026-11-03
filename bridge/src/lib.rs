@@ -59,16 +59,16 @@ mod ffi {
     enum LinkKind {
         SamePage,
         Page,
-        External,
         NotAPage,
         Missing,
+        Unsupported,
         Refused,
     }
 
-    /// Where a link leads.
+    /// Where a link or a typed address leads.
     struct LinkTarget {
         kind: LinkKind,
-        /// The file of a page, or what else there is to tell about the place.
+        /// The address of a page, or what else there is to tell about the place.
         place: String,
         fragment: String,
     }
@@ -118,19 +118,25 @@ mod ffi {
         fn link_at(self: &Page, x: f32, y: f32) -> &str;
         /// How far down the page a place of this name is, or a negative number if it has none.
         fn fragment_y(self: &Page, fragment: &str) -> f32;
-        /// Finds where a link in the page in this file leads.
-        fn resolve_link(page_file: &str, href: &str) -> LinkTarget;
+        /// Finds where a link in the page at this address leads.
+        fn resolve_link(page_address: &str, href: &str) -> LinkTarget;
+        /// Finds where an address typed by the user leads.
+        fn resolve_address(text: &str) -> LinkTarget;
+        /// The address of a local file, or an empty string if there is no such file.
+        fn file_address(path: &str) -> String;
+        /// The local file at an address, or an empty string if it is not one.
+        fn local_path(address: &str) -> String;
 
         type History;
 
         fn new_history() -> Box<History>;
-        fn visit(self: &mut History, path: &str, fragment: &str);
+        fn visit(self: &mut History, address: &str, fragment: &str);
         fn save_scroll(self: &mut History, scroll_y: i32);
         fn go_back(self: &mut History) -> bool;
         fn go_forward(self: &mut History) -> bool;
         fn can_go_back(self: &History) -> bool;
         fn can_go_forward(self: &History) -> bool;
-        fn current_path(self: &History) -> &str;
+        fn current_address(self: &History) -> &str;
         fn current_fragment(self: &History) -> &str;
         fn current_scroll(self: &History) -> i32;
 
@@ -369,8 +375,8 @@ fn new_history() -> Box<History> {
 }
 
 impl History {
-    fn visit(&mut self, path: &str, fragment: &str) {
-        self.0.visit(path, fragment);
+    fn visit(&mut self, address: &str, fragment: &str) {
+        self.0.visit(address, fragment);
     }
 
     fn save_scroll(&mut self, scroll_y: i32) {
@@ -393,8 +399,8 @@ impl History {
         self.0.can_go_forward()
     }
 
-    fn current_path(&self) -> &str {
-        self.0.current().map_or("", |entry| &entry.path)
+    fn current_address(&self) -> &str {
+        self.0.current().map_or("", |entry| &entry.address)
     }
 
     fn current_fragment(&self) -> &str {
@@ -406,25 +412,38 @@ impl History {
     }
 }
 
-fn resolve_link(page_file: &str, href: &str) -> ffi::LinkTarget {
-    let shown = |path: &Path| path.to_string_lossy().into_owned();
-    let (kind, place, fragment) = match links::resolve(Path::new(page_file), href) {
+fn link_target(target: Target) -> ffi::LinkTarget {
+    let (kind, place, fragment) = match target {
         Target::SamePage { fragment } => (ffi::LinkKind::SamePage, String::new(), fragment),
-        Target::Page { path, fragment } => match path.to_str() {
-            Some(path) => (ffi::LinkKind::Page, path.to_owned(), fragment),
-            // A file that the rest of the browser could not name again.
-            None => (ffi::LinkKind::Missing, shown(&path), String::new()),
-        },
-        Target::External(address) => (ffi::LinkKind::External, address, String::new()),
-        Target::NotAPage(path) => (ffi::LinkKind::NotAPage, shown(&path), String::new()),
-        Target::Missing => (ffi::LinkKind::Missing, href.to_owned(), String::new()),
-        Target::Refused => (ffi::LinkKind::Refused, href.to_owned(), String::new()),
+        Target::Page { url, fragment } => (ffi::LinkKind::Page, url, fragment),
+        Target::NotAPage(place) => (ffi::LinkKind::NotAPage, place, String::new()),
+        Target::Missing(place) => (ffi::LinkKind::Missing, place, String::new()),
+        Target::Unsupported(place) => (ffi::LinkKind::Unsupported, place, String::new()),
+        Target::Refused(place) => (ffi::LinkKind::Refused, place, String::new()),
     };
     ffi::LinkTarget {
         kind,
         place,
         fragment,
     }
+}
+
+fn resolve_link(page_address: &str, href: &str) -> ffi::LinkTarget {
+    link_target(links::resolve(page_address, href))
+}
+
+fn resolve_address(text: &str) -> ffi::LinkTarget {
+    link_target(links::resolve_address(text))
+}
+
+fn file_address(path: &str) -> String {
+    links::file_address(Path::new(path)).unwrap_or_default()
+}
+
+fn local_path(address: &str) -> String {
+    links::local_path(address)
+        .and_then(|path| path.to_str().map(str::to_owned))
+        .unwrap_or_default()
 }
 
 fn open_page(utf8: &str, directory: &str) -> Box<Page> {

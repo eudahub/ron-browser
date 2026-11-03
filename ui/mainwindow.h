@@ -10,9 +10,11 @@
 
 class PageView;
 class QAction;
+class QLineEdit;
 
 namespace ron_browser {
 struct History;
+struct LinkTarget;
 }
 
 class MainWindow : public QMainWindow {
@@ -29,18 +31,22 @@ public:
 
 private:
     void chooseFile();
-    // Reads a file into the view. When it cannot be read, says so and leaves what is shown.
-    bool loadFile(const QString &path);
+    // Reads what is at an address into the view. When it cannot be read, says so and leaves what
+    // is shown.
+    bool loadAddress(const QString &address);
     // Goes to a new place, as the user asked. Only this adds to the history.
-    void goTo(const QString &path, const QString &fragment);
+    void goTo(const QString &address, const QString &fragment);
+    void goToTyped();
     void goBack();
     void goForward();
     // Shows the place the history is now at.
     void showCurrentEntry();
     void reload();
     void followLink(const QString &address);
+    void followTarget(const ron_browser::LinkTarget &target);
     void showLinkInStatus(const QString &address);
-    void updateActions();
+    // Shows where the history is, and what can be done from there.
+    void updateNavigation();
 
     PageView *view;
     std::string forcedEncoding;
@@ -48,7 +54,8 @@ private:
     QAction *backAction;
     QAction *forwardAction;
     QAction *reloadAction;
-    QString loadedPath;
+    QLineEdit *addressBar;
+    QString loadedAddress;
     // What the status bar says about the page, when it is not showing a link.
     QString pageStatus;
 };

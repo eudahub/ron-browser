@@ -4,6 +4,7 @@
 
 #include <QAction>
 #include <QFile>
+#include <QLineEdit>
 #include <QScrollBar>
 #include <QStatusBar>
 #include <QTemporaryDir>
@@ -38,6 +39,7 @@ private slots:
     void aFragmentShowsItsPlaceAndBackReturns();
     void aLinkToNothingLeavesThePage();
     void linksToElsewhereStayNamedOnly();
+    void theAddressLineFollowsAndLeads();
     void aButtonOfTheMouseGoesBack();
 
 private:
@@ -161,6 +163,34 @@ void MainWindowTest::linksToElsewhereStayNamedOnly()
     click({10, 108});
     QCOMPARE(window->windowTitle(), QStringLiteral("Outside"));
     QVERIFY(window->statusBar()->currentMessage().contains(QStringLiteral("javascript")));
+}
+
+void MainWindowTest::theAddressLineFollowsAndLeads()
+{
+    auto *line = window->findChild<QLineEdit *>();
+    QVERIFY(line != nullptr);
+    QVERIFY(line->text().startsWith(QStringLiteral("file:///")));
+    QVERIFY(line->text().endsWith(QStringLiteral("/first.html")));
+    click();
+    QVERIFY(line->text().endsWith(QStringLiteral("/second.html")));
+    click();
+    QVERIFY(line->text().endsWith(QStringLiteral("/third.html#end")));
+    action("Back")->trigger();
+    QVERIFY(line->text().endsWith(QStringLiteral("/second.html")));
+
+    line->setText(directory.filePath("broken.html"));
+    QTest::keyClick(line, Qt::Key_Return);
+    QCOMPARE(window->windowTitle(), QStringLiteral("Broken"));
+    QVERIFY(line->text().startsWith(QStringLiteral("file:///")));
+
+    line->setText(QStringLiteral("javascript:alert(1)"));
+    QTest::keyClick(line, Qt::Key_Return);
+    QCOMPARE(window->windowTitle(), QStringLiteral("Broken"));
+    QVERIFY(window->statusBar()->currentMessage().contains(QStringLiteral("javascript")));
+
+    line->setText(directory.filePath("no-such-file.html"));
+    QTest::keyClick(line, Qt::Key_Return);
+    QCOMPARE(window->windowTitle(), QStringLiteral("Broken"));
 }
 
 void MainWindowTest::aButtonOfTheMouseGoesBack()

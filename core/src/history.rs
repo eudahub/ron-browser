@@ -8,7 +8,8 @@ const MAX_ENTRIES: usize = 1000;
 /// A place the user has been.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Entry {
-    pub path: String,
+    /// The address, without a fragment.
+    pub address: String,
     pub fragment: String,
     pub scroll_y: i32,
 }
@@ -22,9 +23,9 @@ pub struct History {
 impl History {
     /// Goes to a new place, which forgets those that Back had left. Going where the user already
     /// is adds nothing.
-    pub fn visit(&mut self, path: &str, fragment: &str) {
+    pub fn visit(&mut self, address: &str, fragment: &str) {
         if let Some(entry) = self.current()
-            && entry.path == path
+            && entry.address == address
             && entry.fragment == fragment
         {
             return;
@@ -34,7 +35,7 @@ impl History {
             self.entries.remove(0);
         }
         self.entries.push(Entry {
-            path: path.to_owned(),
+            address: address.to_owned(),
             fragment: fragment.to_owned(),
             scroll_y: 0,
         });
