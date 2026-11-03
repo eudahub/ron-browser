@@ -28,6 +28,18 @@ yet a break-in.
    CVE-2026-34987 and CVE-2026-34971.
 4. **A very narrow way to the DOM.** This is the riskiest place, as logic errors are easy to make there,
    so each call is checked on the Rust side.
+5. **Scripts run only where the user allows them.** They are off by default.
+   - The white list is not of single addresses as in NoScript. Allowing the current page, such as a bank's,
+     allows the scripts it refers to at that moment, on that site only. New ones from other servers
+     wait for a decision, as an allowed script can load an ad network.
+   - The black list goes before the white one. A page can have useful scripts along with ads, also on
+     the same server, so the user clicks on the part of the window showing an ad, which records the
+     file, directory or server behind it. The most exact entry counts, without query parameters, as
+     ads change those. This works as our own way to the DOM knows which script made an element.
+   - For important pages, a hash of a script can be kept, which asks again when the script changes.
+
+   The black list also holds for images, frames and style sheets, so it blocks ads without any scripts,
+   and can come long before them.
 
 ## Why this order
 

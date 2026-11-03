@@ -27,6 +27,18 @@ Atak musi przejść przez wszystkie po kolei. Zawiedzenie jednej z nich to błą
    CVE-2026-34971.
 4. **Bardzo wąski interfejs do DOM.** To najbardziej ryzykowne miejsce, bo tam łatwo o błędy logiczne, więc
    każde wywołanie jest sprawdzane po stronie Rusta.
+5. **Skrypty działają tylko tam, gdzie zezwoli użytkownik.** Domyślnie są wyłączone.
+   - Biała lista nie jest listą pojedynczych adresów jak w NoScript. Zezwolenie na bieżącą stronę, np. banku,
+     obejmuje skrypty, do których się w tej chwili odwołuje, i tylko na tej witrynie. Nowe z innych serwerów
+     czekają na decyzję, bo dozwolony skrypt może doładować sieć reklamową.
+   - Czarna lista ma pierwszeństwo przed białą. Strona może mieć użyteczne skrypty obok reklam, także na tym
+     samym serwerze, więc użytkownik klika część okna z reklamą, a to zapisuje stojący za nią plik, katalog
+     albo serwer. Liczy się najdokładniejszy wpis, bez parametrów adresu, bo reklamy je zmieniają. Działa to,
+     bo nasz własny interfejs do DOM wie, który skrypt utworzył dany element.
+   - Dla ważnych stron można zachować skrót skryptu i pytać ponownie, gdy skrypt się zmieni.
+
+   Czarna lista obowiązuje też obrazki, ramki i arkusze stylów, więc blokuje reklamy bez żadnych skryptów i może
+   powstać dużo wcześniej niż one.
 
 ## Skąd ta kolejność
 
