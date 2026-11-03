@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Hash timing</title>
+<pre id="out">Running. This page sends its results to the server that gave it.</pre>
+<script src="hash.js"></script>
+<script>
+"use strict";
+var out = document.getElementById("out");
+var lines = [];
+function report(name, ms, result) {
+    lines.push(name + ": " + Math.round(ms * 10) / 10 + " ms " + result);
+    out.textContent = lines.join("\n");
+}
+
+async function runWasm() {
+    var response = await fetch("hash.wasm");
+    if (!response.ok) {
+        report("wasm not there", 0, "");
+        return;
+    }
+    var bytes = await response.arrayBuffer();
+    var exports = (await WebAssembly.instantiate(bytes)).instance.exports;
+    report("wasm self test " + (exports.self_test() ? "right" : "WRONG"), 0, "");
+    var start = performance.now();
+    exports.run_sha256(10000);
+    report("wasm sha256 x 10000", performance.now() - start, "");
+    for (var size of Hash.SIZES) {
+        start = performance.now();
+        exports.run_argon2(size[0], size[1]);
+        report("wasm argon2id " + size[0] + " KiB, " + size[1] + " passes", performance.now() - start, "");
+    }
+}
+
+// Waits a moment between the parts, so that the page has come to rest.
+setTimeout(async function () {
+    Hash.runAll(report, Hash.SIZES);
+    try {
+        await runWasm();
+    } catch (error) {
+        report("wasm failed: " + error, 0, "");
+    }
+    await fetch("result", { method: "POST", body: navigator.userAgent + "\n" + lines.join("\n") + "\n" });
+    // Ends a browser started just for this, if it has been told to let pages do that.
+    window.close();
+}, 300);
+</script>
