@@ -64,7 +64,7 @@ MainWindow::MainWindow(std::string forcedEncoding)
     setCentralWidget(view);
     statusBar();
     setWindowTitle(tr("ron-browser"));
-    resize(900, 700);
+    resize(1280, 900);
 
     auto *fileMenu = menuBar()->addMenu(tr("&File"));
     fileMenu->addAction(tr("&Open..."), QKeySequence::Open, this, &MainWindow::chooseFile);

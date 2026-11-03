@@ -120,7 +120,8 @@ int main(int argc, char *argv[])
     bool print = false;
     bool decode = false;
     QString pageShot;
-    QSize pageShotSize(900, 700);
+    // Wide enough that pages take the layout they have for computers, not the one for phones.
+    QSize pageShotSize(1280, 900);
     int slowLoadSeconds = 0;
     std::optional<QLineF> selection;
     for (int index = 1; index < argc; ++index) {
