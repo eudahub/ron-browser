@@ -181,6 +181,21 @@ fn padding_and_borders_move_the_content_and_paint_the_box() {
 }
 
 #[test]
+fn sunken_and_raised_borders_are_darker_on_one_side() {
+    let colors = |line: &str| {
+        let page = format!("<div style='border:1px {line} rgb(120,120,120)'>a</div>");
+        rects(&lay_out(&page, 100.0))
+            .iter()
+            .map(|rect| rect.color.red)
+            .collect::<Vec<_>>()
+    };
+    // Top, bottom, left and right.
+    assert_eq!(colors("inset"), [80, 120, 80, 120]);
+    assert_eq!(colors("outset"), [120, 80, 120, 80]);
+    assert_eq!(colors("solid"), [120, 120, 120, 120]);
+}
+
+#[test]
 fn widths_and_centering_resolve_against_the_parent() {
     let percent = lay_out("<div style='width:50%;background:red'>a</div>", 200.0);
     assert_eq!(rects(&percent)[0].width, 100.0);

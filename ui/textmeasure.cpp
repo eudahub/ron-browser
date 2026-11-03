@@ -9,6 +9,7 @@
 #include <ron-browser-bridge/src/lib.rs.h>
 
 #include <algorithm>
+#include <cmath>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -105,14 +106,15 @@ float text_width(std::uint32_t font, rust::Str text)
     return static_cast<float>(fonts()[font].metrics.horizontalAdvance(string));
 }
 
+// Rounded up to whole pixels, as Firefox does, which gives the same line heights.
 float font_ascent(std::uint32_t font)
 {
-    return static_cast<float>(fonts()[font].metrics.ascent());
+    return static_cast<float>(std::ceil(fonts()[font].metrics.ascent()));
 }
 
 float font_descent(std::uint32_t font)
 {
-    return static_cast<float>(fonts()[font].metrics.descent());
+    return static_cast<float>(std::ceil(fonts()[font].metrics.descent()));
 }
 
 } // namespace ron_browser

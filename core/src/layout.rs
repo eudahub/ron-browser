@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 
 use ron::css::{
-    Color, ComputedStyle, Display, LineHeight, ListStyleType, Size, Styles, TextAlign,
+    BorderStyle, Color, ComputedStyle, Display, LineHeight, ListStyleType, Size, Styles, TextAlign,
     TextTransform, VerticalAlign, VerticalPosition, Visibility, WhiteSpace,
 };
 use ron::html::{Document, NodeId, NodeKind, Tag};
@@ -262,6 +262,25 @@ fn canvas_color(document: &Document, styles: &Styles) -> Option<Color> {
         .find(|&id| document.tag(id) == Tag::Body)?;
     let color = styles.get(body).background_color;
     (color.alpha != 0).then_some(color)
+}
+
+/// A sunken or raised border is darker on one side: at two thirds of its color, as in Firefox.
+fn shaded(color: Color, line: BorderStyle, top_or_left: bool) -> Color {
+    let dark = match line {
+        BorderStyle::Inset => top_or_left,
+        BorderStyle::Outset => !top_or_left,
+        _ => false,
+    };
+    if !dark {
+        return color;
+    }
+    let darker = |channel: u8| u8::try_from(u16::from(channel) * 2 / 3).unwrap_or(channel);
+    Color {
+        red: darker(color.red),
+        green: darker(color.green),
+        blue: darker(color.blue),
+        alpha: color.alpha,
+    }
 }
 
 fn resolve(size: Size, whole: f32) -> Option<f32> {
@@ -549,22 +568,35 @@ impl Layouter<'_> {
         let widths = style.border_width;
         let colors = style.border_color;
         let (x, width) = (frame.x, frame.width);
+        let lines = style.border_style;
         let sides = [
-            (x, top, width, widths.top, colors.top),
+            (
+                x,
+                top,
+                width,
+                widths.top,
+                shaded(colors.top, lines.top, true),
+            ),
             (
                 x,
                 bottom - widths.bottom,
                 width,
                 widths.bottom,
-                colors.bottom,
+                shaded(colors.bottom, lines.bottom, false),
             ),
-            (x, top, widths.left, bottom - top, colors.left),
+            (
+                x,
+                top,
+                widths.left,
+                bottom - top,
+                shaded(colors.left, lines.left, true),
+            ),
             (
                 x + width - widths.right,
                 top,
                 widths.right,
                 bottom - top,
-                colors.right,
+                shaded(colors.right, lines.right, false),
             ),
         ];
         for (x, y, width, height, color) in sides {
