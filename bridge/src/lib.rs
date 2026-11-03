@@ -5,9 +5,10 @@ use std::path::Path;
 
 use ron_browser_core::images::{ImageStore, LocalFiles};
 use ron_browser_core::layout::{self, ItemKind, TextMeasurer};
-use ron_browser_core::page;
+use ron_browser_core::links::{self, Target};
 use ron_browser_core::selection::{Selection, Unit};
 use ron_browser_core::{Color, charset};
+use ron_browser_core::{history, page};
 
 #[allow(unsafe_code)]
 #[cxx::bridge(namespace = "ron_browser")]
@@ -54,6 +55,24 @@ mod ffi {
         certain: bool,
     }
 
+    /// What kind of place a link leads to.
+    enum LinkKind {
+        SamePage,
+        Page,
+        External,
+        NotAPage,
+        Missing,
+        Refused,
+    }
+
+    /// Where a link leads.
+    struct LinkTarget {
+        kind: LinkKind,
+        /// The file of a page, or what else there is to tell about the place.
+        place: String,
+        fragment: String,
+    }
+
     /// A rectangle to highlight.
     #[derive(Clone, Copy)]
     struct DrawRect {
@@ -94,6 +113,26 @@ mod ffi {
         fn select_all(self: &mut Page);
         fn selected_text(self: &Page) -> String;
         fn highlights(self: &Page, top: f32, bottom: f32) -> Vec<DrawRect>;
+
+        /// The address of the link at a point of the page, or an empty string.
+        fn link_at(self: &Page, x: f32, y: f32) -> &str;
+        /// How far down the page a place of this name is, or a negative number if it has none.
+        fn fragment_y(self: &Page, fragment: &str) -> f32;
+        /// Finds where a link in the page in this file leads.
+        fn resolve_link(page_file: &str, href: &str) -> LinkTarget;
+
+        type History;
+
+        fn new_history() -> Box<History>;
+        fn visit(self: &mut History, path: &str, fragment: &str);
+        fn save_scroll(self: &mut History, scroll_y: i32);
+        fn go_back(self: &mut History) -> bool;
+        fn go_forward(self: &mut History) -> bool;
+        fn can_go_back(self: &History) -> bool;
+        fn can_go_forward(self: &History) -> bool;
+        fn current_path(self: &History) -> &str;
+        fn current_fragment(self: &History) -> &str;
+        fn current_scroll(self: &History) -> i32;
 
         /// The charset a page declares in its first bytes, or an empty string.
         fn declared_charset(bytes: &[u8]) -> String;
@@ -265,6 +304,14 @@ impl Page {
             .collect()
     }
 
+    fn link_at(&self, x: f32, y: f32) -> &str {
+        self.page.layout().link_at(x, y).unwrap_or("")
+    }
+
+    fn fragment_y(&self, fragment: &str) -> f32 {
+        self.page.fragment_y(fragment).unwrap_or(-1.0)
+    }
+
     fn layout_width(&self) -> f32 {
         self.page.layout().width
     }
@@ -311,6 +358,72 @@ impl Page {
             .images()
             .get(image)
             .map_or(&[], |image| &image.rgba)
+    }
+}
+
+/// The history of a window, in a type of this crate as the bridge requires.
+pub struct History(history::History);
+
+fn new_history() -> Box<History> {
+    Box::new(History(history::History::default()))
+}
+
+impl History {
+    fn visit(&mut self, path: &str, fragment: &str) {
+        self.0.visit(path, fragment);
+    }
+
+    fn save_scroll(&mut self, scroll_y: i32) {
+        self.0.save_scroll(scroll_y);
+    }
+
+    fn go_back(&mut self) -> bool {
+        self.0.go_back()
+    }
+
+    fn go_forward(&mut self) -> bool {
+        self.0.go_forward()
+    }
+
+    fn can_go_back(&self) -> bool {
+        self.0.can_go_back()
+    }
+
+    fn can_go_forward(&self) -> bool {
+        self.0.can_go_forward()
+    }
+
+    fn current_path(&self) -> &str {
+        self.0.current().map_or("", |entry| &entry.path)
+    }
+
+    fn current_fragment(&self) -> &str {
+        self.0.current().map_or("", |entry| &entry.fragment)
+    }
+
+    fn current_scroll(&self) -> i32 {
+        self.0.current().map_or(0, |entry| entry.scroll_y)
+    }
+}
+
+fn resolve_link(page_file: &str, href: &str) -> ffi::LinkTarget {
+    let shown = |path: &Path| path.to_string_lossy().into_owned();
+    let (kind, place, fragment) = match links::resolve(Path::new(page_file), href) {
+        Target::SamePage { fragment } => (ffi::LinkKind::SamePage, String::new(), fragment),
+        Target::Page { path, fragment } => match path.to_str() {
+            Some(path) => (ffi::LinkKind::Page, path.to_owned(), fragment),
+            // A file that the rest of the browser could not name again.
+            None => (ffi::LinkKind::Missing, shown(&path), String::new()),
+        },
+        Target::External(address) => (ffi::LinkKind::External, address, String::new()),
+        Target::NotAPage(path) => (ffi::LinkKind::NotAPage, shown(&path), String::new()),
+        Target::Missing => (ffi::LinkKind::Missing, href.to_owned(), String::new()),
+        Target::Refused => (ffi::LinkKind::Refused, href.to_owned(), String::new()),
+    };
+    ffi::LinkTarget {
+        kind,
+        place,
+        fragment,
     }
 }
 

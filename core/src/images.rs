@@ -84,7 +84,7 @@ impl ResourceLoader for LocalFiles {
     }
 }
 
-fn percent_decode(text: &str) -> Option<String> {
+pub(crate) fn percent_decode(text: &str) -> Option<String> {
     if !text.contains('%') {
         return Some(text.to_owned());
     }

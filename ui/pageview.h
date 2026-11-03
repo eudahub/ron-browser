@@ -31,6 +31,11 @@ public:
     void setPage(const std::string &utf8, const QString &directory = QString());
     void clearPage();
     QString pageTitle() const;
+    bool hasPage() const;
+    int scrollY() const;
+    void setScrollY(int y);
+    // Shows the place of this name, and tells whether the page has one.
+    bool scrollToFragment(const QString &fragment);
     void layOutNow();
     // Puts the selected text on the clipboard.
     void copySelection();
@@ -41,6 +46,14 @@ public:
     // of the page would, and returns the text.
     QString selectForTest(QPointF from, QPointF to, int clicks);
 
+signals:
+    // The mouse came to a link with this address, or left all of them with an empty one.
+    void linkHovered(const QString &address);
+    // The user clicked a link. A drag that starts on one selects instead.
+    void linkActivated(const QString &address);
+    void backButtonPressed();
+    void forwardButtonPressed();
+
 protected:
     void paintEvent(QPaintEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
@@ -48,8 +61,11 @@ protected:
     void mouseDoubleClickEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
+    void leaveEvent(QEvent *event) override;
 
 private:
+    QString linkAt(QPointF viewPosition) const;
+    void setHoveredLink(const QString &address);
     void layOut();
     void updateScrollBars();
     QPointF pagePosition(QPointF viewPosition) const;
@@ -68,6 +84,10 @@ private:
     QElapsedTimer lastDoubleClick;
     QPointF lastDoubleClickPosition;
     QTimer *dragScrollTimer;
+    QString hoveredLink;
+    // Where the left button went down on a link, for telling a click from a drag.
+    QString pressedLink;
+    QPointF pressPosition;
 };
 
 #endif

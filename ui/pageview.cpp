@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <cmath>
 #include <optional>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -76,6 +77,7 @@ PageView::PageView(QWidget *parent)
     dragScrollTimer->setInterval(50);
     connect(dragScrollTimer, &QTimer::timeout, this, &PageView::scrollWhileDragging);
     viewport()->setCursor(Qt::IBeamCursor);
+    viewport()->setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
     // While the window is being resized, long pages are only laid out once it stops.
     resizeTimer->setSingleShot(true);
@@ -97,6 +99,8 @@ void PageView::setPage(const std::string &utf8, const QString &directory)
     holder->page = ron_browser::open_page(utf8, rust::Str(path.constData(), static_cast<size_t>(path.size())));
     verticalScrollBar()->setValue(0);
     horizontalScrollBar()->setValue(0);
+    setHoveredLink(QString());
+    pressedLink.clear();
     layOut();
 }
 
@@ -104,8 +108,58 @@ void PageView::clearPage()
 {
     holder->forgetImages();
     holder->page.reset();
+    setHoveredLink(QString());
+    pressedLink.clear();
     updateScrollBars();
     viewport()->update();
+}
+
+bool PageView::hasPage() const
+{
+    return holder->page.has_value();
+}
+
+int PageView::scrollY() const
+{
+    return verticalScrollBar()->value();
+}
+
+void PageView::setScrollY(int y)
+{
+    verticalScrollBar()->setValue(y);
+}
+
+bool PageView::scrollToFragment(const QString &fragment)
+{
+    if (!holder->page) {
+        return false;
+    }
+    const QByteArray name = fragment.toUtf8();
+    const float y = (*holder->page)->fragment_y(rust::Str(name.constData(), static_cast<size_t>(name.size())));
+    if (y < 0) {
+        return false;
+    }
+    setScrollY(qFloor(y));
+    return true;
+}
+
+QString PageView::linkAt(QPointF viewPosition) const
+{
+    if (!holder->page) {
+        return {};
+    }
+    const QPointF at = pagePosition(viewPosition);
+    const rust::Str link = (*holder->page)->link_at(static_cast<float>(at.x()), static_cast<float>(at.y()));
+    return QString::fromUtf8(link.data(), static_cast<qsizetype>(link.size()));
+}
+
+void PageView::setHoveredLink(const QString &address)
+{
+    if (address != hoveredLink) {
+        hoveredLink = address;
+        viewport()->setCursor(address.isEmpty() ? Qt::IBeamCursor : Qt::PointingHandCursor);
+        emit linkHovered(address);
+    }
 }
 
 QString PageView::pageTitle() const
@@ -141,6 +195,19 @@ void PageView::pressAt(QMouseEvent *event, int clicks)
 
 void PageView::mousePressEvent(QMouseEvent *event)
 {
+    if (event->button() == Qt::BackButton) {
+        emit backButtonPressed();
+        return;
+    }
+    if (event->button() == Qt::ForwardButton) {
+        emit forwardButtonPressed();
+        return;
+    }
+    pressedLink.clear();
+    if (event->button() == Qt::LeftButton && (event->modifiers() & Qt::ShiftModifier) == 0) {
+        pressedLink = linkAt(event->position());
+        pressPosition = event->position();
+    }
     const int distance = QApplication::startDragDistance();
     const bool isThird = lastDoubleClick.isValid()
         && lastDoubleClick.elapsed() < QApplication::styleHints()->mouseDoubleClickInterval()
@@ -152,6 +219,7 @@ void PageView::mouseDoubleClickEvent(QMouseEvent *event)
 {
     lastDoubleClick.start();
     lastDoubleClickPosition = event->position();
+    pressedLink.clear();
     pressAt(event, 2);
 }
 
@@ -169,7 +237,15 @@ void PageView::mouseMoveEvent(QMouseEvent *event)
     if (dragging) {
         lastDragPosition = event->position();
         dragTo(lastDragPosition);
+    } else {
+        setHoveredLink(linkAt(event->position()));
     }
+}
+
+void PageView::leaveEvent(QEvent *event)
+{
+    QAbstractScrollArea::leaveEvent(event);
+    setHoveredLink(QString());
 }
 
 // Moves the page while the mouse is held beyond its edges, so that selections can span it.
@@ -193,6 +269,12 @@ void PageView::mouseReleaseEvent(QMouseEvent *event)
         dragging = false;
         dragScrollTimer->stop();
         offerSelection();
+        const QString clicked = std::exchange(pressedLink, QString());
+        const qreal moved = (event->position() - pressPosition).manhattanLength();
+        if (!clicked.isEmpty() && moved < QApplication::startDragDistance() && linkAt(event->position()) == clicked) {
+            // Last, as this can replace the page.
+            emit linkActivated(clicked);
+        }
     }
 }
 

@@ -1,7 +1,7 @@
 //! An opened page: its tree, styles and layout.
 
 use ron::css::{Styles, Viewport, compute_styles, document_stylesheets};
-use ron::html::{Document, NodeKind, Tag, parse};
+use ron::html::{Document, NodeId, NodeKind, Tag, parse};
 
 use crate::images::{ImageStore, NoResources, ResourceLoader};
 use crate::layout::{FontSpec, Layout, TextMeasurer, layout};
@@ -86,6 +86,39 @@ impl Page {
             self.viewport = viewport;
         }
         self.layout = layout(&self.document, &self.styles, &self.images, width, measurer);
+    }
+
+    /// How far down the page a link to `#fragment` leads, if there is such a place: an element
+    /// with that `id`, or else an `<a>` with that `name`. An empty fragment and `top` lead to the
+    /// top, unless the page has a place of that name.
+    #[must_use]
+    pub fn fragment_y(&self, fragment: &str) -> Option<f32> {
+        let document = &self.document;
+        let mut by_name = None;
+        let has = |id: NodeId, name: &str| {
+            document.attributes(id).any(|attribute| {
+                attribute.name.eq_ignore_ascii_case(name) && attribute.decoded_value() == fragment
+            })
+        };
+        let mut found = None;
+        if !fragment.is_empty() {
+            for id in document.descendants(document.root()) {
+                if document.kind(id) != NodeKind::Element {
+                    continue;
+                }
+                if has(id, "id") {
+                    found = Some(id);
+                    break;
+                }
+                if by_name.is_none() && document.tag(id) == Tag::A && has(id, "name") {
+                    by_name = Some(id);
+                }
+            }
+        }
+        match found.or(by_name) {
+            Some(id) => self.layout.anchor_y(id),
+            None => (fragment.is_empty() || fragment.eq_ignore_ascii_case("top")).then_some(0.0),
+        }
     }
 
     /// The images of the page.

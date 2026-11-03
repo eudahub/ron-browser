@@ -5,6 +5,7 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QScrollBar>
+#include <QSignalSpy>
 #include <QStyleHints>
 #include <QTest>
 
@@ -12,6 +13,7 @@ namespace {
 
 const char page[] = "<!DOCTYPE html><style>body{margin:0}p{margin:20px 0;font-size:16px}</style>"
                     "<p>first block</p><p>second block</p><ul><li>item</ul>";
+const char linkPage[] = "<!DOCTYPE html><style>body{margin:0}</style><a href=next.html>a link to the next page</a>";
 
 } // namespace
 
@@ -33,6 +35,9 @@ private slots:
     void copyWithNothingSelectedLeavesTheClipboard();
     void listMarkersAreNotCopied();
     void selectionSurvivesScrollAndResize();
+    void clickOnALinkActivatesIt();
+    void dragFromALinkSelectsInstead();
+    void hoverTellsAboutLinks();
 
 private:
     QString copied();
@@ -173,6 +178,43 @@ void PageViewTest::selectionSurvivesScrollAndResize()
     view->resize(400, 300);
     view->layOutNow();
     QCOMPARE(copied(), QStringLiteral("line"));
+}
+
+void PageViewTest::clickOnALinkActivatesIt()
+{
+    view->setPage(linkPage);
+    view->layOutNow();
+    QSignalSpy activated(view, &PageView::linkActivated);
+    QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, QPoint(10, 10));
+    QCOMPARE(activated.size(), 1);
+    QCOMPARE(activated.front().front().toString(), QStringLiteral("next.html"));
+    QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, QPoint(10, 300));
+    QCOMPARE(activated.size(), 1);
+}
+
+void PageViewTest::dragFromALinkSelectsInstead()
+{
+    view->setPage(linkPage);
+    view->layOutNow();
+    QSignalSpy activated(view, &PageView::linkActivated);
+    drag(QPoint(0, 10), QPoint(30, 10));
+    QCOMPARE(activated.size(), 0);
+    QVERIFY(!copied().isEmpty());
+}
+
+void PageViewTest::hoverTellsAboutLinks()
+{
+    view->setPage(linkPage);
+    view->layOutNow();
+    QSignalSpy hovered(view, &PageView::linkHovered);
+    QTest::mouseMove(view->viewport(), QPoint(10, 10));
+    QTRY_COMPARE(hovered.size(), 1);
+    QCOMPARE(hovered.front().front().toString(), QStringLiteral("next.html"));
+    QCOMPARE(view->viewport()->cursor().shape(), Qt::PointingHandCursor);
+    QTest::mouseMove(view->viewport(), QPoint(10, 300));
+    QTRY_COMPARE(hovered.size(), 2);
+    QVERIFY(hovered.back().front().toString().isEmpty());
+    QCOMPARE(view->viewport()->cursor().shape(), Qt::IBeamCursor);
 }
 
 QTEST_MAIN(PageViewTest)

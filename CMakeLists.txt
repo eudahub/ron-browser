@@ -95,7 +95,20 @@ if(BUILD_TESTING)
     target_include_directories(pageview_test PRIVATE ui ${CXXBRIDGE_INCLUDES})
     target_link_libraries(pageview_test PRIVATE core Qt6::Widgets Qt6::Test ${CMAKE_DL_LIBS})
     add_test(NAME pageview_test COMMAND pageview_test)
-    set_tests_properties(pageview_test PROPERTIES
+    add_executable(mainwindow_test
+        tests/mainwindow_test.cpp
+        ui/mainwindow.cpp
+        ui/mainwindow.h
+        ui/pageloader.cpp
+        ui/pageloader.h
+        ui/pageview.cpp
+        ui/pageview.h
+        ui/textmeasure.cpp
+        ui/textmeasure.h)
+    target_include_directories(mainwindow_test PRIVATE ui ${CXXBRIDGE_INCLUDES})
+    target_link_libraries(mainwindow_test PRIVATE core Qt6::Widgets Qt6::Test ${CMAKE_DL_LIBS})
+    add_test(NAME mainwindow_test COMMAND mainwindow_test)
+    set_tests_properties(pageview_test mainwindow_test PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
         TIMEOUT 60)
 endif()

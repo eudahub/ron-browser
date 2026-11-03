@@ -95,6 +95,17 @@ pub struct Line {
     pub end: u32,
 }
 
+/// A part of the page that a link covers.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LinkArea {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    /// The number of the link in [`Layout::links`].
+    pub link: u32,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Layout {
     pub items: Vec<Item>,
@@ -110,6 +121,34 @@ pub struct Layout {
     pub tiles: Vec<Tile>,
     /// Whether lines go down the page in order, which floats with text in them can upset.
     pub lines_in_order: bool,
+    /// The addresses of the links, as written.
+    pub links: Vec<Box<str>>,
+    /// In drawing order, so the last under a point is the one on top.
+    pub link_areas: Vec<LinkArea>,
+    /// Elements that a link can lead to, with where their text starts.
+    pub anchors: Vec<(NodeId, u32)>,
+}
+
+impl Layout {
+    /// The address of the link at a point of the page.
+    #[must_use]
+    pub fn link_at(&self, x: f32, y: f32) -> Option<&str> {
+        let area = self.link_areas.iter().rev().find(|area| {
+            x >= area.x && x < area.x + area.width && y >= area.y && y < area.y + area.height
+        })?;
+        self.links.get(area.link as usize).map(AsRef::as_ref)
+    }
+
+    /// How far down the page an element is, if it is one that a link can lead to.
+    #[must_use]
+    pub fn anchor_y(&self, node: NodeId) -> Option<f32> {
+        let &(_, position) = self.anchors.iter().find(|(anchor, _)| *anchor == node)?;
+        let line = self.lines.iter().find(|line| {
+            // Text before it may end right there, but a line with no text is really at that place.
+            line.end > position || (line.start == position && line.end == position)
+        });
+        Some(line.map_or(self.height, |line| line.top))
+    }
 }
 
 /// Collapsed margins that wait for what comes next.
@@ -208,6 +247,8 @@ struct Run {
     atom: Option<Atom>,
     /// Text right in the block, not in an inline element.
     direct: bool,
+    /// The number of the link it is in.
+    link: Option<u32>,
 }
 
 impl Run {
@@ -221,6 +262,7 @@ impl Run {
             && self.shift.to_bits() == other.shift.to_bits()
             && self.background == other.background
             && self.direct == other.direct
+            && self.link == other.link
             && self.atom.is_none()
             && other.atom.is_none()
     }
@@ -274,6 +316,8 @@ struct Layouter<'a> {
     marker: Option<Marker>,
     /// Decorations in force, with the elements that added to them.
     decorations: Vec<(NodeId, u8)>,
+    /// Links in force, with their elements.
+    open_links: Vec<(NodeId, u32)>,
     last_line_bottom: Option<f32>,
 }
 
@@ -327,6 +371,7 @@ pub fn layout(
         pending_space: None,
         marker: None,
         decorations: Vec::new(),
+        open_links: Vec::new(),
         last_line_bottom: None,
     };
     layouter.run();
@@ -519,6 +564,7 @@ impl Layouter<'_> {
         if style.display == Display::None || is_replaced(self.document, id) {
             return false;
         }
+        self.note_link_and_anchor(id);
         if self.document.tag(id) == Tag::Img {
             self.add_image(id, style);
             return false;
@@ -543,9 +589,50 @@ impl Layouter<'_> {
         true
     }
 
+    /// Notes what the element is for links: one itself, or a place that they can lead to.
+    fn note_link_and_anchor(&mut self, id: NodeId) {
+        let is_a = self.document.tag(id) == Tag::A;
+        let mut is_anchor = false;
+        for attribute in self.document.attributes(id) {
+            if attribute.name.eq_ignore_ascii_case("id")
+                || (is_a && attribute.name.eq_ignore_ascii_case("name"))
+            {
+                is_anchor = true;
+            } else if is_a && attribute.name.eq_ignore_ascii_case("href") {
+                let number = offset(self.out.links.len());
+                self.out.links.push(attribute.decoded_value().into());
+                self.open_links.push((id, number));
+            }
+        }
+        if is_anchor {
+            let position = offset(self.out.text.len());
+            self.out.anchors.push((id, position));
+        }
+    }
+
+    /// Makes a part of the page lead where the link goes.
+    fn push_link_area(&mut self, link: Option<u32>, x: f32, y: f32, width: f32, height: f32) {
+        if let Some(link) = link {
+            self.out.link_areas.push(LinkArea {
+                x,
+                y,
+                width,
+                height,
+                link,
+            });
+        }
+    }
+
+    fn current_link(&self) -> Option<u32> {
+        self.open_links.last().map(|&(_, link)| link)
+    }
+
     fn leave_element(&mut self, id: NodeId) {
         if self.decorations.last().is_some_and(|&(node, _)| node == id) {
             self.decorations.pop();
+        }
+        if self.open_links.last().is_some_and(|&(node, _)| node == id) {
+            self.open_links.pop();
         }
         if self.frames.last().is_some_and(|frame| frame.node == id) {
             self.flush_inline();
@@ -987,6 +1074,7 @@ impl Layouter<'_> {
             (limit_left, limit_right),
         );
         self.draw_image_box(atom, style, &sides, x, y);
+        self.push_link_area(self.current_link(), x, y, total_width, total_height);
         self.add_float(FloatBox {
             is_left,
             left: x,
@@ -1005,6 +1093,9 @@ impl Layouter<'_> {
         self.commit_margins();
         let top = self.cursor - sides.margin_top;
         self.draw_image_box(atom, style, &sides, left, top);
+        let outer_width = atom.width + sides.horizontal();
+        let outer_height = atom.height + sides.vertical();
+        self.push_link_area(self.current_link(), left, top, outer_width, outer_height);
         self.cursor =
             top + sides.margin_top + sides.vertical() - sides.margin_top - sides.margin_bottom
                 + atom.height;
@@ -1356,6 +1447,7 @@ impl Layouter<'_> {
             },
             atom: None,
             direct: false,
+            link: self.current_link(),
         }
     }
 
@@ -1744,6 +1836,7 @@ impl Layouter<'_> {
         let mut text_x = x;
         for piece in &stretches {
             let run = &block.runs[piece.run];
+            self.push_link_area(run.link, text_x, top, piece.width, bottom - top);
             if let Some(atom) = run.atom {
                 self.draw_atom(atom, text_x, baseline);
             } else if run.background.alpha != 0 {

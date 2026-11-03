@@ -4,7 +4,9 @@
 pub use ron::css::Color;
 
 pub mod charset;
+pub mod history;
 pub mod images;
 pub mod layout;
+pub mod links;
 pub mod page;
 pub mod selection;

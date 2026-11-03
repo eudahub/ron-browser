@@ -3,8 +3,20 @@ Web browser built on the [ron](https://github.com/eudahub/ron) engine, with a wi
 
 The current stage lays out local pages: blocks with margins, padding, borders and backgrounds,
 wrapped text with fonts, colors, alignment and decorations, list markers, images, background
-images and floats. Text aims to land where it does in Firefox. There are no table grids, links or
-network yet, and table parts stack as blocks.
+images and floats. Text aims to land where it does in Firefox. Links work between local pages.
+There are no table grids or network yet, and table parts stack as blocks.
+
+## Links and history
+
+A click on a link goes there, and a drag that starts on one selects text as usual. The status bar
+shows where the link under the mouse leads. Back, Forward (also Alt+Left, Alt+Right and the mouse's
+own buttons) and Reload are in the toolbar, and Back returns to how far down the page was.
+
+Only what the user does adds to the history or moves in it, so that a page can never hold the user
+back. Links open local pages, with `.htm`, `.html`, `.shtml` or `.xhtml` in their names, and the index
+page of a directory, wherever they are on the disk. Other files are only named in the status bar, as is
+anything on a network, as there is no network yet. Schemes like `javascript:` and `data:` are not
+followed at all. `<base>` is ignored for now.
 
 ## Selecting text
 
