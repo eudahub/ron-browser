@@ -1,8 +1,6 @@
 #include "textmeasure.h"
 
 #include <QFontMetricsF>
-#include <QGuiApplication>
-#include <QScreen>
 #include <QString>
 #include <QStringList>
 
@@ -22,7 +20,21 @@ const size_t maxFonts = 4096;
 struct KnownFont {
     QFont font;
     QFontMetricsF metrics;
+    // Qt only has fonts of whole pixels, also when asked in points, while CSS sizes such as 12.8
+    // are common. So text is measured and drawn at the nearest whole size and scaled by this.
+    qreal scale;
+    // How far the font reaches, at its real size. Small sizes in Qt are hinted, and so a little off.
+    qreal ascent;
+    qreal descent;
 };
+
+// The size that tells the true proportions of a font, large enough to leave out hinting.
+const int proportionsSize = 1024;
+
+int wholeSize(float size)
+{
+    return std::max(qRound(size), 1);
+}
 
 std::vector<KnownFont> &fonts()
 {
@@ -67,10 +79,9 @@ QFont makeFont(const ron_browser::FontSpec &spec)
         font.setFamily(QStringLiteral("sans-serif"));
     }
     font.setStyleHint(hint);
-    // CSS sizes are in pixels, and QFont only takes whole ones, so go through points.
-    const QScreen *screen = QGuiApplication::primaryScreen();
-    const qreal dpi = screen != nullptr ? screen->logicalDotsPerInchY() : 96.0;
-    font.setPointSizeF(std::max<qreal>(spec.size, 1.0) * 72.0 / dpi);
+    // Letters as wide as the font says, not rounded to whole pixels each, which adds up.
+    font.setHintingPreference(QFont::PreferVerticalHinting);
+    font.setPixelSize(wholeSize(spec.size));
     font.setWeight(static_cast<QFont::Weight>(std::clamp<int>(spec.weight, 1, 1000)));
     font.setItalic(spec.italic);
     return font;
@@ -94,7 +105,13 @@ std::uint32_t register_font(const FontSpec &spec)
         return static_cast<std::uint32_t>(known.size() - 1);
     }
     const QFont font = makeFont(spec);
-    known.push_back({font, QFontMetricsF(font)});
+    const qreal scale = std::max<qreal>(spec.size, 0.01) / wholeSize(spec.size);
+    QFont large = font;
+    large.setPixelSize(proportionsSize);
+    const QFontMetricsF proportions(large);
+    const qreal size = std::max<qreal>(spec.size, 0.01);
+    known.push_back({font, QFontMetricsF(font), scale, proportions.ascent() * size / proportionsSize,
+                     proportions.descent() * size / proportionsSize});
     const auto id = static_cast<std::uint32_t>(known.size() - 1);
     ids.emplace(key, id);
     return id;
@@ -103,18 +120,19 @@ std::uint32_t register_font(const FontSpec &spec)
 float text_width(std::uint32_t font, rust::Str text)
 {
     const QString string = QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size()));
-    return static_cast<float>(fonts()[font].metrics.horizontalAdvance(string));
+    const KnownFont &known = fonts()[font];
+    return static_cast<float>(known.metrics.horizontalAdvance(string) * known.scale);
 }
 
 // Rounded up to whole pixels, as Firefox does, which gives the same line heights.
 float font_ascent(std::uint32_t font)
 {
-    return static_cast<float>(std::ceil(fonts()[font].metrics.ascent()));
+    return static_cast<float>(std::ceil(fonts()[font].ascent));
 }
 
 float font_descent(std::uint32_t font)
 {
-    return static_cast<float>(std::ceil(fonts()[font].metrics.descent()));
+    return static_cast<float>(std::ceil(fonts()[font].descent));
 }
 
 } // namespace ron_browser
@@ -122,4 +140,9 @@ float font_descent(std::uint32_t font)
 const QFont &fontForId(std::uint32_t id)
 {
     return fonts()[id].font;
+}
+
+qreal fontScaleForId(std::uint32_t id)
+{
+    return fonts()[id].scale;
 }

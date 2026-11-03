@@ -564,9 +564,19 @@ void PageView::paintEvent(QPaintEvent *event)
         const rust::Str text = page->item_text(index);
         painter.setPen(color);
         const QFont &font = fontForId(item.font);
+        const qreal scale = fontScaleForId(item.font);
         painter.setFont(font);
         const QPointF start(item.x, item.baseline);
-        painter.drawText(start, QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size())));
+        const QString string = QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size()));
+        if (scale == 1.0) {
+            painter.drawText(start, string);
+        } else {
+            painter.save();
+            painter.translate(start);
+            painter.scale(scale, scale);
+            painter.drawText(QPointF(0, 0), string);
+            painter.restore();
+        }
         if (item.decoration != 0) {
             const QFontMetricsF metrics(font);
             const qreal thickness = std::max<qreal>(metrics.lineWidth(), 1.0);
@@ -574,13 +584,13 @@ void PageView::paintEvent(QPaintEvent *event)
                 painter.fillRect(QRectF(item.x, item.baseline + offset, item.width, thickness), color);
             };
             if ((item.decoration & underlineBit) != 0) {
-                drawLine(metrics.underlinePos());
+                drawLine(metrics.underlinePos() * scale);
             }
             if ((item.decoration & overlineBit) != 0) {
-                drawLine(-metrics.overlinePos());
+                drawLine(-metrics.overlinePos() * scale);
             }
             if ((item.decoration & lineThroughBit) != 0) {
-                drawLine(-metrics.strikeOutPos());
+                drawLine(-metrics.strikeOutPos() * scale);
             }
         }
     }

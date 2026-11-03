@@ -9,6 +9,10 @@
 #include <QStyleHints>
 #include <QTest>
 
+#include <ron-browser-bridge/src/lib.rs.h>
+
+#include <cmath>
+
 namespace {
 
 const char page[] = "<!DOCTYPE html><style>body{margin:0}p{margin:20px 0;font-size:16px}</style>"
@@ -35,6 +39,7 @@ private slots:
     void copyWithNothingSelectedLeavesTheClipboard();
     void listMarkersAreNotCopied();
     void selectionSurvivesScrollAndResize();
+    void fontsHaveTheirExactSizes();
     void clickOnALinkActivatesIt();
     void dragFromALinkSelectsInstead();
     void hoverTellsAboutLinks();
@@ -178,6 +183,19 @@ void PageViewTest::selectionSurvivesScrollAndResize()
     view->resize(400, 300);
     view->layOutNow();
     QCOMPARE(copied(), QStringLiteral("line"));
+}
+
+void PageViewTest::fontsHaveTheirExactSizes()
+{
+    // Qt only has fonts of whole pixels, and left to itself gives 13 for 12.8.
+    const auto font = [](float size) {
+        return ron_browser::register_font(ron_browser::FontSpec{"sans-serif", size, 400, false});
+    };
+    const rust::Str text("as of this commit");
+    const float whole = ron_browser::text_width(font(16.0F), text);
+    QVERIFY(std::abs(ron_browser::text_width(font(12.8F), text) - whole * 0.8F) < 0.5F);
+    QVERIFY(std::abs(ron_browser::text_width(font(13.0F), text) - whole * 13.0F / 16.0F) < 0.5F);
+    QVERIFY(ron_browser::text_width(font(12.8F), text) < ron_browser::text_width(font(13.0F), text));
 }
 
 void PageViewTest::clickOnALinkActivatesIt()
