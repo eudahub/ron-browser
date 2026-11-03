@@ -22,6 +22,10 @@
 
 namespace {
 
+// What the styles of a page count on when it is printed as text, with no window.
+const float printWidth = 1024;
+const float printHeight = 768;
+
 // How long a screenshot waits for a page and its images to arrive.
 const int maxScreenshotWaitMs = 60000;
 
@@ -39,7 +43,7 @@ int printPage(const QString &path, const std::string &encoding)
         std::cerr << path.toStdString() << ": " << decoded.error.toStdString() << "\n";
         return 1;
     }
-    const auto page = ron_browser::open_page(decoded.utf8, "");
+    const auto page = ron_browser::open_page(decoded.utf8, "", printWidth, printHeight);
     std::cout << "encoding: " << decoded.encoding << " (" << decoded.encodingSource.toStdString() << ")\n"
               << "title: " << std::string(page->title()) << "\n\n"
               << std::string(page->plain_text()) << "\n";

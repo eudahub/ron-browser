@@ -28,6 +28,8 @@ namespace {
 const std::uint8_t underlineBit = 1;
 const std::uint8_t overlineBit = 2;
 const std::uint8_t lineThroughBit = 4;
+// The longest side of a shot of a whole page; Qt cannot paint much beyond this anyway.
+const int maxShotSide = 32000;
 // A page shows after this long without the style sheets that have not come by then.
 const qint64 maxSheetWaitMs = 10000;
 
@@ -103,7 +105,9 @@ void PageView::setPage(const std::string &utf8, const QString &directory)
 {
     forgetPage();
     const QByteArray path = directory.toUtf8();
-    holder->page = ron_browser::open_page(utf8, rust::Str(path.constData(), static_cast<size_t>(path.size())));
+    const QSize size = viewport()->size();
+    holder->page = ron_browser::open_page(utf8, rust::Str(path.constData(), static_cast<size_t>(path.size())),
+                                          static_cast<float>(size.width()), static_cast<float>(size.height()));
     verticalScrollBar()->setValue(0);
     horizontalScrollBar()->setValue(0);
     setHoveredLink(QString());
@@ -132,7 +136,9 @@ void PageView::prepareFetchedPage(const std::string &utf8, const QString &addres
 {
     const QByteArray bytes = address.toUtf8();
     const rust::Str str(bytes.constData(), static_cast<size_t>(bytes.size()));
-    holder->incoming = ron_browser::open_fetched_page(utf8, str);
+    const QSize size = viewport()->size();
+    holder->incoming = ron_browser::open_fetched_page(utf8, str, static_cast<float>(size.width()),
+                                                      static_cast<float>(size.height()));
     holder->sheetFetch = (*holder->incoming)->start_sheet_fetch(str);
     incomingAddress = address;
     incomingWait.start();
@@ -425,8 +431,9 @@ QPixmap PageView::grabWholePage(QSize atLeast)
     resize(atLeast);
     layOutNow();
     if (holder->page) {
-        resize(std::max(atLeast.width(), qCeil((*holder->page)->layout_width())),
-               std::max(atLeast.height(), qCeil((*holder->page)->layout_height())));
+        const int width = std::max(atLeast.width(), qCeil((*holder->page)->layout_width()));
+        const int height = std::max(atLeast.height(), qCeil((*holder->page)->layout_height()));
+        resize(std::min(width, maxShotSide), std::min(height, maxShotSide));
     }
     return viewport()->grab();
 }
@@ -434,7 +441,10 @@ QPixmap PageView::grabWholePage(QSize atLeast)
 void PageView::layOutNow()
 {
     resizeTimer->stop();
-    layOut();
+    // Lines only change with the width, and a long page takes a while to lay out.
+    if (viewport()->width() != laidOutWidth) {
+        layOut();
+    }
 }
 
 void PageView::layOut()

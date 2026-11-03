@@ -49,7 +49,8 @@ public:
     // Puts the selected text on the clipboard.
     void copySelection();
     void selectAll();
-    // The whole page without scroll bars, at least this large.
+    // The whole page without scroll bars, at least this large. A very long page gets cut off, as
+    // one image of it would take many gigabytes.
     QPixmap grabWholePage(QSize atLeast);
     // For a test of what a drag gives, without a mouse: selects as a drag between two points
     // of the page would, and returns the text.

@@ -6,7 +6,7 @@ use std::net::TcpListener;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use ron::css::Color;
+use ron::css::{Color, Viewport};
 use ron_browser_core::images::{ImageStore, ResourceLoader};
 use ron_browser_core::layout::{FontSpec, ItemKind, TextMeasurer};
 use ron_browser_core::net::SheetFetch;
@@ -313,6 +313,7 @@ fn sheets_come_from_the_network_with_their_addresses() {
     let mut page = Page::open_fetched(
         "<!DOCTYPE html><link rel=stylesheet href=/css/a.css><p>x",
         &address,
+        Viewport::default(),
     );
     read_sheets(&mut page, &address);
     page.lay_out(500.0, 400.0, &mut Measurer::default());
@@ -329,6 +330,7 @@ fn what_is_not_called_css_does_not_count() {
     let mut page = Page::open_fetched(
         "<!DOCTYPE html><link rel=stylesheet href=/not-css><p>x",
         &address,
+        Viewport::default(),
     );
     read_sheets(&mut page, &address);
     page.lay_out(500.0, 400.0, &mut Measurer::default());
@@ -342,6 +344,7 @@ fn a_secure_page_reads_no_plain_sheets() {
     let mut page = Page::open_fetched(
         &format!("<!DOCTYPE html><link rel=stylesheet href={server}/css/a.css><p>x"),
         address,
+        Viewport::default(),
     );
     read_sheets(&mut page, address);
     page.lay_out(500.0, 400.0, &mut Measurer::default());
@@ -354,6 +357,7 @@ fn a_page_on_the_network_reads_no_local_sheets() {
     let mut page = Page::open_fetched(
         "<!DOCTYPE html><link rel=stylesheet href=file:///etc/passwd><p>x",
         address,
+        Viewport::default(),
     );
     read_sheets(&mut page, address);
     assert_eq!(page.sheet_requests(), []);

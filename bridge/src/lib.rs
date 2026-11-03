@@ -3,6 +3,7 @@
 
 use std::path::Path;
 
+use ron_browser_core::Viewport;
 use ron_browser_core::images::{ImageStore, LocalFiles};
 use ron_browser_core::layout::{self, ItemKind, TextMeasurer};
 use ron_browser_core::links::{self, Target};
@@ -98,8 +99,8 @@ mod ffi {
     extern "Rust" {
         type Page;
 
-        /// Parses a page and computes its styles.
-        fn open_page(utf8: &str, directory: &str) -> Box<Page>;
+        /// Parses a page and computes its styles for a view of this size.
+        fn open_page(utf8: &str, directory: &str, width: f32, height: f32) -> Box<Page>;
         fn title(self: &Page) -> String;
         fn plain_text(self: &Page) -> String;
 
@@ -148,7 +149,7 @@ mod ffi {
         fn poll(self: &mut PageFetch) -> FetchedPage;
 
         /// Parses a page from this address on the network, without reading what it refers to.
-        fn open_fetched_page(utf8: &str, address: &str) -> Box<Page>;
+        fn open_fetched_page(utf8: &str, address: &str, width: f32, height: f32) -> Box<Page>;
 
         type SheetFetch;
 
@@ -485,9 +486,9 @@ impl PageFetch {
 /// The style sheets of a page being read, in a type of this crate as the bridge requires.
 pub struct SheetFetch(net::SheetFetch);
 
-fn open_fetched_page(utf8: &str, address: &str) -> Box<Page> {
+fn open_fetched_page(utf8: &str, address: &str, width: f32, height: f32) -> Box<Page> {
     Box::new(Page {
-        page: page::Page::open_fetched(utf8, address),
+        page: page::Page::open_fetched(utf8, address, Viewport { width, height }),
         items: Vec::new(),
         selection: None,
     })
@@ -581,10 +582,15 @@ fn local_path(address: &str) -> String {
         .unwrap_or_default()
 }
 
-fn open_page(utf8: &str, directory: &str) -> Box<Page> {
+fn open_page(utf8: &str, directory: &str, width: f32, height: f32) -> Box<Page> {
     let mut files = LocalFiles::new(Path::new(directory));
     Box::new(Page {
-        page: page::Page::open_with(utf8, &mut files, ImageStore::default()),
+        page: page::Page::open_sized(
+            utf8,
+            &mut files,
+            ImageStore::default(),
+            Viewport { width, height },
+        ),
         items: Vec::new(),
         selection: None,
     })

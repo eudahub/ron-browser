@@ -46,8 +46,18 @@ impl Page {
     /// Parses a page, computes its styles, and loads its images through `loader`, on top of
     /// those already in `images`.
     pub fn open_with(utf8: &str, loader: &mut dyn ResourceLoader, images: ImageStore) -> Self {
+        Self::open_sized(utf8, loader, images, Viewport::default())
+    }
+
+    /// Like [`Self::open_with`], for a view of this size. Styles depend on it, so a later layout at
+    /// this size need not compute them again, which takes long on a large page.
+    pub fn open_sized(
+        utf8: &str,
+        loader: &mut dyn ResourceLoader,
+        images: ImageStore,
+        viewport: Viewport,
+    ) -> Self {
         let document = parse(utf8);
-        let viewport = Viewport::default();
         let mut sheets = Sheets::of_document(&document, None);
         // Each round brings what the sheets of the last one import, which has a limit.
         loop {
@@ -75,13 +85,13 @@ impl Page {
     }
 
     /// Parses a page from this address on the network. What it refers to comes in later, through
-    /// [`Self::sheet_requests`] and [`Self::image_sources`].
+    /// [`Self::sheet_requests`] and [`Self::image_sources`], so styles wait for
+    /// [`Self::apply_sheets`].
     #[must_use]
-    pub fn open_fetched(utf8: &str, address: &str) -> Self {
+    pub fn open_fetched(utf8: &str, address: &str, viewport: Viewport) -> Self {
         let document = parse(utf8);
-        let viewport = Viewport::default();
         let sheets = Sheets::of_document(&document, Some(address));
-        let styles = compute_styles(&document, &sheets.active(viewport), viewport);
+        let styles = Styles::unstyled(&document);
         Self {
             document,
             sheets,
