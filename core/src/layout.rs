@@ -783,7 +783,7 @@ fn shaded(color: Color, line: BorderStyle, top_or_left: bool) -> Color {
     }
 }
 
-fn resolve(size: Size, whole: f32) -> Option<f32> {
+pub(crate) fn resolve(size: Size, whole: f32) -> Option<f32> {
     match size {
         Size::Auto => None,
         Size::Px(px) => Some(px),
@@ -798,7 +798,7 @@ fn is_picture(document: &Document, id: NodeId) -> bool {
 }
 
 /// The size that an `<svg>` says it has, by itself. With only a shape, it takes the room there is.
-fn svg_size(document: &Document, id: NodeId, available: f32) -> (f32, f32) {
+pub(crate) fn svg_size(document: &Document, id: NodeId, available: f32) -> (f32, f32) {
     let attribute = |name: &str| {
         document
             .attributes(id)
@@ -1984,6 +1984,9 @@ impl Layouter<'_> {
     }
 
     fn image_of(&self, id: NodeId) -> Option<u32> {
+        if self.document.tag(id) == Tag::Svg {
+            return self.images.number_of_svg(id.index());
+        }
         let source = self
             .document
             .attributes(id)

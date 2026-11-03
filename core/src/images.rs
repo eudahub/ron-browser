@@ -2,6 +2,7 @@
 //! C++ decoder ever reads image files from a page.
 
 use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::Cursor;
 use std::path::{Component, Path, PathBuf};
 
@@ -15,6 +16,8 @@ const MAX_DECODING_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_TOTAL_BYTES: usize = 1024 * 1024 * 1024;
 /// Larger files are not read.
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
+/// How many different SVGs in a page get drawn, as each takes work that blocks the window.
+const MAX_DRAWN_SVGS: usize = 4096;
 
 /// Gives the bytes of what a page refers to.
 pub trait ResourceLoader {
@@ -116,10 +119,14 @@ pub struct DecodedImage {
     pub rgba: Vec<u8>,
 }
 
-/// Decodes an image of any format that has a safe decoder: PNG, JPEG, GIF, WebP or BMP. Of an
+/// Decodes an image of any format that has a safe decoder: PNG, JPEG, GIF, WebP, BMP or SVG. Of an
 /// animation, the first frame. Returns `None` for what cannot be decoded.
 #[must_use]
 pub fn decode(bytes: &[u8]) -> Option<DecodedImage> {
+    decode_bitmap(bytes).or_else(|| crate::svg::decode(bytes))
+}
+
+fn decode_bitmap(bytes: &[u8]) -> Option<DecodedImage> {
     let mut reader = ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .ok()?;
@@ -143,6 +150,10 @@ pub struct ImageStore {
     images: Vec<DecodedImage>,
     by_url: HashMap<Box<str>, Option<u32>>,
     total_bytes: usize,
+    /// What an `<svg>` in the page has been drawn as, by the position of its node.
+    of_svg: HashMap<usize, u32>,
+    /// What has been drawn, by what the text and size of it hash to, as icons repeat.
+    drawn_svgs: HashMap<u64, Option<u32>>,
 }
 
 impl ImageStore {
@@ -169,6 +180,41 @@ impl ImageStore {
         self.total_bytes += image.rgba.len();
         self.images.push(image);
         u32::try_from(self.images.len() - 1).ok()
+    }
+
+    /// Draws an `<svg>` of a page if it has not been yet, and notes it for its node.
+    pub fn draw_svg(&mut self, node: usize, text: &str, width: f32, height: f32) {
+        let mut hasher = DefaultHasher::new();
+        text.hash(&mut hasher);
+        width.to_bits().hash(&mut hasher);
+        height.to_bits().hash(&mut hasher);
+        let key = hasher.finish();
+        let number = match self.drawn_svgs.get(&key) {
+            Some(&number) => number,
+            None => {
+                let number = if self.drawn_svgs.len() < MAX_DRAWN_SVGS {
+                    crate::svg::render(text, width, height).and_then(|image| self.add(image))
+                } else {
+                    None
+                };
+                self.drawn_svgs.insert(key, number);
+                number
+            }
+        };
+        match number {
+            Some(number) => {
+                self.of_svg.insert(node, number);
+            }
+            None => {
+                self.of_svg.remove(&node);
+            }
+        }
+    }
+
+    /// The number of what the `<svg>` at this node has been drawn as.
+    #[must_use]
+    pub fn number_of_svg(&self, node: usize) -> Option<u32> {
+        self.of_svg.get(&node).copied()
     }
 
     /// The number of the image at a URL, unless it is missing or broken.

@@ -13,3 +13,4 @@ pub mod page;
 pub mod savepage;
 pub mod selection;
 pub mod sheets;
+pub mod svg;

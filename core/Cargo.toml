@@ -8,6 +8,7 @@ publish = false
 cpg-rs = { path = "../../cpg-rs" }
 flate2 = "1"
 image ={ version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
+resvg = { version = "0.49", default-features = false }
 ron = { path = "../../ron" }
 unicode-segmentation = "1"
 ureq = "3"

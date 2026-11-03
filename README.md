@@ -2,7 +2,7 @@
 Web browser built on the [ron](https://github.com/eudahub/ron) engine, with a window in Qt.
 
 The current stage shows pages from files and from the web: blocks with margins, padding, borders and
-backgrounds, wrapped text with fonts, colors, alignment and decorations, list markers, images,
+backgrounds, wrapped text with fonts, colors, alignment and decorations, list markers, images, SVG,
 background images, floats, inline blocks, tables, flexible boxes, grids, positioned boxes, image maps and
 style sheets. Text aims to land where it does in Firefox. Form controls do not draw yet, and scripts do not
 run, so many pages on the web still look quite different from how they should.
@@ -103,6 +103,12 @@ draws text runs and rectangles at the positions it gets; Qt never interprets con
 Images are decoded in Rust too: PNG, JPEG, GIF (its first frame), WebP and BMP, with limits on
 their size that apply before anything is allocated. A local page can only load images from its own
 directory and below it: no other scheme, and no way out by `..`, an absolute path or a symbolic link.
+
+SVG, both within a page and as a file for `<img>`, is drawn in Rust by
+[resvg](https://github.com/linebender/resvg), up to 1 MB of source and 4096 pixels a side. It loads
+nothing: images that an SVG refers to stay out. Text in an SVG does not show, as it gets no fonts, and
+of the style sheets of the page it only sees the color of the `<svg>` itself, so `fill` set there or on
+the shapes within does not count, while attributes and sheets inside the SVG do.
 
 Legacy encodings are found and turned into UTF-8 by [cpg-rs](https://github.com/eudahub/cpg-rs), also
 in Rust. Its language models are built in, so the program needs no data files.

@@ -6,11 +6,13 @@ use std::io::{Read, Write};
 use flate2::Compression;
 use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
-use ron::css::{StyleProgress, Styles, Viewport, compute_styles, extend_styles};
+use ron::css::{Display, StyleProgress, Styles, Viewport, compute_styles, extend_styles};
 use ron::html::{Document, NodeId, NodeKind, Parser, Tag, parse_owned};
 
 use crate::images::{DecodedImage, ImageStore, NoResources, ResourceLoader};
-use crate::layout::{FontSpec, Layout, LayoutProgress, TextMeasurer, layout, layout_more};
+use crate::layout::{
+    FontSpec, Layout, LayoutProgress, TextMeasurer, layout, layout_more, resolve, svg_size,
+};
 use crate::sheets::{SheetRequest, Sheets, decode_css, is_https};
 
 /// Smaller sources are not worth packing.
@@ -54,6 +56,7 @@ struct Arriving {
     /// How many nodes have been looked at for style sheets and for images.
     sheets_looked_at: usize,
     images_looked_at: usize,
+    svgs_looked_at: usize,
     /// The last style sheet found, until it is complete.
     sheet_to_read: Option<NodeId>,
 }
@@ -67,6 +70,7 @@ impl Arriving {
             layout: LayoutProgress::default(),
             sheets_looked_at: 0,
             images_looked_at: 0,
+            svgs_looked_at: 0,
             sheet_to_read: None,
         }
     }
@@ -76,6 +80,7 @@ impl Arriving {
         self.styles = StyleProgress::new();
         self.layout = LayoutProgress::default();
         self.images_looked_at = 0;
+        self.svgs_looked_at = 0;
     }
 }
 
@@ -123,6 +128,38 @@ fn load_images_of(
     }
     if let Some(url) = &styles.get(id).background_image {
         images.load(url, loader);
+    }
+}
+
+/// Where to go on looking for `<svg>` elements, which is before any that is still being written.
+fn first_open_svg(document: &Document, from: usize) -> usize {
+    document
+        .nodes_from(from)
+        .find(|&id| document.tag(id) == Tag::Svg && document.is_open(id))
+        .map_or(document.node_count(), NodeId::index)
+}
+
+/// Draws an `<svg>` of a page, at the size it is going to have as far as that is known here. It gets
+/// fitted to the size that comes of the layout when it is drawn.
+fn draw_svg_of(
+    document: &Document,
+    styles: &Styles,
+    id: NodeId,
+    images: &mut ImageStore,
+    viewport: Viewport,
+) {
+    if document.kind(id) != NodeKind::Element || document.tag(id) != Tag::Svg {
+        return;
+    }
+    let style = styles.get(id);
+    if style.display == Display::None {
+        return;
+    }
+    let (own_width, own_height) = svg_size(document, id, viewport.width);
+    let width = resolve(style.width, viewport.width).unwrap_or(own_width);
+    let height = resolve(style.height, viewport.height).unwrap_or(own_height);
+    if let Some(text) = crate::svg::serialize(document, id, style.color) {
+        images.draw_svg(id.index(), &text, width, height);
     }
 }
 
@@ -381,6 +418,13 @@ impl Page {
             }
             arriving.images_looked_at = document.node_count();
         }
+        for id in document.nodes_from(arriving.svgs_looked_at) {
+            // One still being written would come out as part of itself.
+            if !document.is_open(id) {
+                draw_svg_of(document, styles, id, &mut self.images, self.viewport);
+            }
+        }
+        arriving.svgs_looked_at = first_open_svg(document, arriving.svgs_looked_at);
         layout_more(
             document,
             styles,
@@ -449,6 +493,11 @@ impl Page {
             &self.sheets.active(self.viewport),
             self.viewport,
         );
+        // New styles can give an `<svg>` another size or color.
+        let document = &self.document;
+        for id in document.descendants(document.root()) {
+            draw_svg_of(document, &self.styles, id, &mut self.images, self.viewport);
+        }
     }
 
     /// Keeps the source in less memory until it is needed again, which is best done once things
@@ -503,6 +552,7 @@ impl Page {
         let document = &self.document;
         for id in document.descendants(document.root()) {
             load_images_of(document, &self.styles, id, &mut self.images, loader);
+            draw_svg_of(document, &self.styles, id, &mut self.images, self.viewport);
         }
     }
 
