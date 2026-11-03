@@ -3,13 +3,14 @@
 //! An SVG comes from a page, so it can do little: it reaches neither the network nor the disk, as
 //! references to other images are refused, and text in it does not show, as no fonts are given to
 //! it. The size of what comes in and of what comes out is limited. Styles of the page reach it only
-//! through the color of the `<svg>` itself.
+//! through the color of the `<svg>` itself and the fill of it and of what it holds.
 
 use std::collections::HashSet;
+use std::fmt::Write;
 
 use resvg::tiny_skia::{Pixmap, Transform};
 use resvg::usvg::{ImageHrefResolver, Options, Tree};
-use ron::css::Color;
+use ron::css::{Color, Styles};
 use ron::html::{Document, NodeId, NodeKind};
 
 use crate::images::DecodedImage;
@@ -114,10 +115,11 @@ fn is_plain_name(name: &str) -> bool {
             .all(|part| part.is_ascii_alphanumeric() || matches!(part, '-' | '_' | '.'))
 }
 
-/// Writes an `<svg>` of a page out as a file of its own, with the color it gets from its style.
-/// Gives nothing when it gets too long.
+/// Writes an `<svg>` of a page out as a file of its own, with the color it gets from its style and
+/// the fills that style sheets give to it and to what it holds. Gives nothing when it gets too long.
 #[must_use]
-pub fn serialize(document: &Document, id: NodeId, color: Color) -> Option<String> {
+pub fn serialize(document: &Document, styles: &Styles, id: NodeId) -> Option<String> {
+    let color = styles.get(id).color;
     let mut out = String::new();
     // Each node, and whether it is being left.
     let mut waiting = vec![(id, false)];
@@ -143,6 +145,22 @@ pub fn serialize(document: &Document, id: NodeId, color: Color) -> Option<String
                 out.push_str(&name);
                 // HTML lets a name repeat, and XML does not.
                 let mut seen = HashSet::new();
+                // A style sheet goes before the attribute that it would meet in the SVG.
+                if let Some(fill) = styles.get(node).fill {
+                    seen.insert("fill");
+                    out.push_str(" fill=\"");
+                    if fill.alpha == 0 {
+                        out.push_str("none");
+                    } else {
+                        out.push_str(&hex(fill));
+                    }
+                    out.push('"');
+                    if fill.alpha != 0 && fill.alpha != 255 {
+                        seen.insert("fill-opacity");
+                        let opacity = f32::from(fill.alpha) / 255.0;
+                        let _ = write!(out, " fill-opacity=\"{opacity}\"");
+                    }
+                }
                 for attribute in document.attributes(node) {
                     let skipped = attribute.name == "xmlns"
                         || (node == id && attribute.name.eq_ignore_ascii_case("color"))

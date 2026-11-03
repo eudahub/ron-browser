@@ -158,7 +158,7 @@ fn draw_svg_of(
     let (own_width, own_height) = svg_size(document, id, viewport.width);
     let width = resolve(style.width, viewport.width).unwrap_or(own_width);
     let height = resolve(style.height, viewport.height).unwrap_or(own_height);
-    if let Some(text) = crate::svg::serialize(document, id, style.color) {
+    if let Some(text) = crate::svg::serialize(document, styles, id) {
         images.draw_svg(id.index(), &text, width, height);
     }
 }

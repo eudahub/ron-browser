@@ -106,9 +106,10 @@ directory and below it: no other scheme, and no way out by `..`, an absolute pat
 
 SVG, both within a page and as a file for `<img>`, is drawn in Rust by
 [resvg](https://github.com/linebender/resvg), up to 1 MB of source and 4096 pixels a side. It loads
-nothing: images that an SVG refers to stay out. Text in an SVG does not show, as it gets no fonts, and
-of the style sheets of the page it only sees the color of the `<svg>` itself, so `fill` set there or on
-the shapes within does not count, while attributes and sheets inside the SVG do.
+nothing: images that an SVG refers to stay out. Text in an SVG does not show, as it gets no fonts. Of
+the style sheets of the page it sees the color of the `<svg>` itself and `fill` there and on the shapes
+within, as a plain color; `stroke` set there does not count, while attributes and sheets inside the SVG
+do.
 
 Legacy encodings are found and turned into UTF-8 by [cpg-rs](https://github.com/eudahub/cpg-rs), also
 in Rust. Its language models are built in, so the program needs no data files.

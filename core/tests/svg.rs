@@ -161,6 +161,49 @@ fn current_color_comes_from_the_style() {
 }
 
 #[test]
+fn fill_comes_from_style_sheets() {
+    let shape = "<rect width=4 height=4 /></svg>";
+    let on_the_svg = only_image(&format!(
+        "<style>.icon{{fill:currentColor;color:#c00000}}</style>\
+         <svg class=icon width=4 height=4>{shape}"
+    ));
+    assert_eq!(pixel(&on_the_svg, 2, 2), [0xc0, 0, 0, 255]);
+    let within = only_image(
+        "<style>svg rect{fill:#00a000}</style><svg width=4 height=4><rect width=4 height=4 /></svg>",
+    );
+    assert_eq!(pixel(&within, 2, 2), [0, 0xa0, 0, 255]);
+    let none = only_image(&format!(
+        "<style>svg{{fill:none}}</style><svg width=4 height=4>{shape}"
+    ));
+    assert_eq!(pixel(&none, 2, 2)[3], 0);
+}
+
+#[test]
+fn fill_of_a_style_sheet_beats_only_the_attribute_on_the_same_element() {
+    let beaten = only_image(
+        "<style>rect{fill:#00a000}</style>\
+         <svg width=4 height=4><rect width=4 height=4 fill=red /></svg>",
+    );
+    assert_eq!(pixel(&beaten, 2, 2), [0, 0xa0, 0, 255]);
+    let own_stays = only_image(
+        "<style>svg{fill:#00a000}</style>\
+         <svg width=4 height=4><rect width=4 height=4 fill=#ff0000 /></svg>",
+    );
+    assert_eq!(pixel(&own_stays, 2, 2), [255, 0, 0, 255]);
+}
+
+#[test]
+fn fill_can_show_through() {
+    let image = only_image(
+        "<style>rect{fill:rgba(0,160,0,.5)}</style>\
+         <svg width=4 height=4><rect width=4 height=4 fill-opacity=1 /></svg>",
+    );
+    let [_, green, _, alpha] = pixel(&image, 2, 2);
+    assert!(green.abs_diff(0xa0) <= 2, "{green}");
+    assert!(alpha.abs_diff(128) <= 2, "{alpha}");
+}
+
+#[test]
 fn what_shows_through_keeps_its_color() {
     let image = only_image(
         "<svg width=4 height=4><rect width=4 height=4 fill=#00a000 fill-opacity=0.5 /></svg>",
