@@ -5,12 +5,14 @@
 //! to ranges of it. Selection and copying work on that string, so they follow the text and
 //! not the geometry. List markers live apart from it, so they cannot be selected.
 //!
-//! Floats take their place at the side, and lines of text go around them. Not handled yet:
-//! tables as grids, and positioned boxes, which stay in the flow. Table parts stack as blocks
-//! for now.
+//! Floats take their place at the side, and lines of text go around them. Tables are in
+//! [`table`]. Not handled yet: positioned boxes, which stay in the flow.
+
+mod table;
 
 use std::collections::HashMap;
 use std::ops::Range;
+use std::rc::Rc;
 
 use crate::images::ImageStore;
 
@@ -306,6 +308,8 @@ struct Frame {
     float_return: Option<FloatReturn>,
     /// What to go back to when this block is an inline block.
     inline_return: Option<Box<InlineReturn>>,
+    /// What to go back to when this block is a cell of a table.
+    cell_return: Option<Box<InlineReturn>>,
     background_tile: Option<usize>,
     padding_top: f32,
     margin_bottom: f32,
@@ -418,6 +422,14 @@ struct Layouter<'a> {
     inline_box_depth: usize,
     last_line_bottom: Option<f32>,
     last_baseline: Option<f32>,
+    /// The tables open around the current position. A table is all there before it starts, so
+    /// none is open when a layout stops to wait for more.
+    tables: Vec<table::TableState>,
+    /// What has been worked out about tables, as those around them need it too. Nothing when an
+    /// element is not made up as a table.
+    table_grids: HashMap<usize, Option<Rc<table::TableGrid>>>,
+    /// How many tables are being measured around the current one.
+    grid_depth: usize,
 }
 
 /// Lays out a document in a view of this width.
@@ -497,6 +509,9 @@ pub fn layout_more(
         inline_box_depth: state.inline_box_depth,
         last_line_bottom: state.last_line_bottom,
         last_baseline: state.last_baseline,
+        tables: Vec::new(),
+        table_grids: HashMap::new(),
+        grid_depth: 0,
     };
     let position = layouter.run(state.position);
     if complete {
@@ -615,6 +630,7 @@ impl LayoutState {
                 lowest_float: 0.0,
                 float_return: None,
                 inline_return: None,
+                cell_return: None,
                 background_tile: None,
                 padding_top: 0.0,
                 margin_bottom: 0.0,
@@ -792,10 +808,22 @@ impl Layouter<'_> {
             {
                 return Position::At(id);
             }
+            // The columns of a table depend on all of it.
+            if document.kind(id) == NodeKind::Element
+                && self.is_open(id)
+                && table::is_table(self.styles.get(id).display)
+            {
+                if is_block(self.styles.get(id).display) {
+                    self.flush_inline();
+                }
+                return Position::At(id);
+            }
             let descend = match document.kind(id) {
                 NodeKind::Element => self.enter_element(id),
                 NodeKind::Text => {
-                    self.add_text(id);
+                    if !self.in_table_structure() {
+                        self.add_text(id);
+                    }
                     false
                 }
                 _ => false,
@@ -905,6 +933,10 @@ impl Layouter<'_> {
         if style.display == Display::None || is_replaced(self.document, id) {
             return false;
         }
+        let in_table_structure = self.in_table_structure();
+        if in_table_structure && !Self::is_table_part(style.display) {
+            return false;
+        }
         self.note_link_and_anchor(id);
         if self.document.tag(id) == Tag::Img {
             self.add_image(id, style);
@@ -914,6 +946,10 @@ impl Layouter<'_> {
             let all = self.current_decoration() | style.text_decoration;
             self.decorations.push((id, all));
         }
+        if in_table_structure {
+            self.enter_table_part(id, style);
+            return true;
+        }
         if style.float != Float::None {
             self.flush_inline();
             self.open_float(id, style);
@@ -921,13 +957,17 @@ impl Layouter<'_> {
             self.open_inline_box(id, style);
         } else if is_block(style.display) {
             self.flush_inline();
-            self.open_frame(id, style);
+            let table_width = self.table_content_width(id, style);
+            self.open_frame_at(id, style, table_width, None);
         } else if self.document.tag(id) == Tag::Br {
             self.add_line_break(style);
             if style.clear != Clear::None {
                 self.flush_inline();
                 self.clear_floats(style.clear);
             }
+        }
+        if table::is_table(style.display) {
+            self.begin_table(id);
         }
         true
     }
@@ -1115,6 +1155,14 @@ impl Layouter<'_> {
         if self.decorations.last().is_some_and(|&(node, _)| node == id) {
             self.decorations.pop();
         }
+        if self
+            .tables
+            .last()
+            .is_some_and(|_| self.in_table_structure())
+            && self.frames.last().is_some_and(|frame| frame.node == id)
+        {
+            self.finish_table();
+        }
         if self.frames.last().is_some_and(|frame| frame.node == id) {
             self.flush_inline();
             self.close_frame();
@@ -1252,8 +1300,22 @@ impl Layouter<'_> {
             return;
         };
         let (dx, dy) = (x - inline_box.x, y - inline_box.y);
+        let width = inline_box.width;
+        let ranges = [
+            inline_box.items.clone(),
+            inline_box.lines.clone(),
+            inline_box.link_areas.clone(),
+            inline_box.area_shapes.clone(),
+        ];
+        self.move_ranges(ranges, dx, dy);
+        self.out.width = self.out.width.max(x + width);
+    }
+
+    /// Moves what lies in these ranges of the items, lines, link areas and shapes of areas.
+    fn move_ranges(&mut self, ranges: [Range<usize>; 4], dx: f32, dy: f32) {
+        let [items, lines, link_areas, area_shapes] = ranges;
         let out = &mut self.out;
-        for item in &mut out.items[inline_box.items.clone()] {
+        for item in &mut out.items[items] {
             item.x += dx;
             item.y += dy;
             match item.kind {
@@ -1267,17 +1329,17 @@ impl Layouter<'_> {
                 ItemKind::Rect | ItemKind::Image => {}
             }
         }
-        for line in &mut out.lines[inline_box.lines.clone()] {
+        for line in &mut out.lines[lines] {
             line.top += dy;
             line.bottom += dy;
             line.left += dx;
             line.right += dx;
         }
-        for area in &mut out.link_areas[inline_box.link_areas.clone()] {
+        for area in &mut out.link_areas[link_areas] {
             area.x += dx;
             area.y += dy;
         }
-        for shape in &mut out.area_shapes[inline_box.area_shapes.clone()] {
+        for shape in &mut out.area_shapes[area_shapes] {
             match shape {
                 AreaShape::Circle { x, y, .. } => {
                     *x += dx;
@@ -1291,7 +1353,6 @@ impl Layouter<'_> {
                 }
             }
         }
-        out.width = out.width.max(x + inline_box.width);
     }
 
     fn current_decoration(&self) -> u8 {
@@ -1398,6 +1459,7 @@ impl Layouter<'_> {
             lowest_float: 0.0,
             float_return: None,
             inline_return: None,
+            cell_return: None,
             background_tile,
             padding_top,
             margin_bottom: resolve(style.margin.bottom, available).unwrap_or(0.0),
@@ -1580,9 +1642,22 @@ impl Layouter<'_> {
         }
     }
 
-    /// The width of a block's content without any wrapping. Walks the tree without recursion.
+    /// The width of a block's content without any wrapping.
     fn preferred_width(&mut self, id: NodeId, depth: usize) -> f32 {
+        self.content_widths(id, depth, false).1
+    }
+
+    /// How narrow a block's content can get by wrapping, if `want_least` asks for it, as that takes
+    /// measuring each word, and how wide it is without any wrapping. Walks the tree without
+    /// recursion, apart from what has a size of its own.
+    fn content_widths(&mut self, id: NodeId, depth: usize, want_least: bool) -> (f32, f32) {
+        if table::is_table(self.styles.get(id).display)
+            && let Some((least, wanted)) = self.table_widths(id)
+        {
+            return (least.ceil(), wanted.ceil());
+        }
         let document = self.document;
+        let mut least = 0.0_f32;
         let mut widest = 0.0_f32;
         let mut line = 0.0_f32;
         // What the blocks open around the line take across.
@@ -1602,16 +1677,37 @@ impl Layouter<'_> {
                             let (width, _) = self.image_size(node, style, 0.0);
                             line += space + width + sides.horizontal();
                             space = 0.0;
+                            least = least.max(width + sides.horizontal() + around);
                         } else if style.float == Float::None
                             && self.becomes_inline_box(node, style)
                             && depth + 1 < MAX_INLINE_BOX_DEPTH
                         {
-                            let width = match resolve(style.width, 0.0) {
-                                Some(width) => width,
-                                None => self.preferred_width(node, depth + 1),
+                            let (smallest, width) = match resolve(style.width, 0.0) {
+                                Some(width) => (width, width),
+                                None => self.content_widths(node, depth + 1, want_least),
                             };
                             line += space + width + sides.horizontal();
                             space = 0.0;
+                            least = least.max(smallest + sides.horizontal() + around);
+                        } else if is_block(style.display)
+                            && (table::is_table(style.display)
+                                || matches!(style.width, Size::Px(_)))
+                        {
+                            // It has a size of its own, whatever it holds.
+                            widest = widest.max(line + around);
+                            line = 0.0;
+                            space = 0.0;
+                            let (mut smallest, mut width) = if table::is_table(style.display) {
+                                self.table_widths(node).unwrap_or((0.0, 0.0))
+                            } else {
+                                (0.0, 0.0)
+                            };
+                            if let Size::Px(own) = style.width {
+                                smallest = smallest.max(own);
+                                width = smallest;
+                            }
+                            least = least.max(smallest + sides.horizontal() + around);
+                            widest = widest.max(width + sides.horizontal() + around);
                         } else if document.tag(node) == Tag::Br {
                             widest = widest.max(line + around);
                             line = 0.0;
@@ -1639,8 +1735,14 @@ impl Layouter<'_> {
                             line += space + self.measurer.width(font, part);
                             space = 0.0;
                             widest = widest.max(line + around);
+                            least = least.max(line + around);
                         }
                     } else {
+                        if want_least && style.white_space != WhiteSpace::Nowrap {
+                            for word in text.split_ascii_whitespace() {
+                                least = least.max(self.measured_word(font, word) + around);
+                            }
+                        }
                         let collapsed = text.split_ascii_whitespace().collect::<Vec<_>>().join(" ");
                         let space_width = self.measurer.width(font, " ");
                         if text.starts_with(|c: char| c.is_ascii_whitespace()) && line > 0.0 {
@@ -1651,6 +1753,9 @@ impl Layouter<'_> {
                             space = 0.0;
                             if text.ends_with(|c: char| c.is_ascii_whitespace()) {
                                 space = space_width;
+                            }
+                            if style.white_space == WhiteSpace::Nowrap {
+                                least = least.max(line + around);
                             }
                         }
                     }
@@ -1682,7 +1787,18 @@ impl Layouter<'_> {
                 }
             });
         }
-        widest.max(line + around).ceil()
+        (least.ceil(), widest.max(line + around).ceil())
+    }
+
+    /// The width of a word, remembered per font.
+    fn measured_word(&mut self, font: u32, word: &str) -> f32 {
+        let widths = self.word_widths.entry(font).or_default();
+        if let Some(&width) = widths.get(word) {
+            return width;
+        }
+        let width = self.measurer.width(font, word);
+        widths.insert(word.into(), width);
+        width
     }
 
     /// The size of an image's content box: what is set, or what the file has, keeping its shape.
@@ -1882,6 +1998,7 @@ impl Layouter<'_> {
                 || frame.height.is_some()
                 || frame.min_height > 0.0
                 || frame.lowest_float > 0.0
+                || frame.cell_return.is_some()
         };
         if needs_room {
             if self.frames.last().is_some_and(|frame| frame.top.is_some()) {
@@ -1891,7 +2008,7 @@ impl Layouter<'_> {
                 self.commit_margins();
             }
         }
-        let frame = self.frames.pop().expect("checked above");
+        let mut frame = self.frames.pop().expect("checked above");
         let node = frame.node;
         let Some(top) = frame.top else {
             // Nothing took up room, so its margins collapse together.
@@ -1915,6 +2032,10 @@ impl Layouter<'_> {
             content_height = content_height.min(most);
         }
         let bottom = content_top + content_height + frame.bottom_inset;
+        if let Some(saved) = frame.cell_return.take() {
+            self.close_cell(&frame, *saved, top, bottom);
+            return;
+        }
         self.cursor = bottom;
         if let Some(index) = frame.background_item {
             self.out.items[index].height = bottom - top;

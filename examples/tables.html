@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tables</title>
+<style>
+  body { font-family: sans-serif; margin: 20px; max-width: 860px; }
+  h2 { font-size: 17px; margin: 26px 0 8px; }
+  .grid td, .grid th { border: 1px solid #889; padding: 4px 8px; }
+  .grid th { background: #dde4ee; }
+  .zebra tbody tr:nth-child(even) { background: #f0f3f8; }
+  .num { text-align: right; }
+  .css-table { display: table; border-spacing: 6px; background: #eef; }
+  .css-row { display: table-row; }
+  .css-cell { display: table-cell; background: #fff; padding: 6px 10px; }
+</style>
+</head>
+<body>
+<h1>Tables</h1>
+
+<h2>Separate borders, a caption, a header and a body</h2>
+<table class="grid">
+  <caption>Rivers of Poland</caption>
+  <thead><tr><th>River</th><th>Length</th><th>Flows into</th></tr></thead>
+  <tbody>
+    <tr><td>Vistula</td><td class="num">1047 km</td><td>Baltic Sea</td></tr>
+    <tr><td>Oder</td><td class="num">840 km</td><td>Baltic Sea</td></tr>
+    <tr><td>Warta</td><td class="num">795 km</td><td>Oder</td></tr>
+  </tbody>
+</table>
+
+<h2>Collapsed borders, and every other row shaded</h2>
+<table class="grid zebra" style="border-collapse: collapse">
+  <thead><tr><th>Quarter</th><th>Income</th><th>Costs</th><th>Left</th></tr></thead>
+  <tbody>
+    <tr><td>First</td><td class="num">120</td><td class="num">80</td><td class="num">40</td></tr>
+    <tr><td>Second</td><td class="num">140</td><td class="num">95</td><td class="num">45</td></tr>
+    <tr><td>Third</td><td class="num">110</td><td class="num">70</td><td class="num">40</td></tr>
+    <tr><td>Fourth</td><td class="num">160</td><td class="num">90</td><td class="num">70</td></tr>
+  </tbody>
+</table>
+
+<h2>Cells over several columns and rows</h2>
+<table class="grid" style="border-collapse: collapse">
+  <tr><th colspan="3">Timetable</th></tr>
+  <tr><th>Hour</th><th>Monday</th><th>Tuesday</th></tr>
+  <tr><td>8:00</td><td rowspan="2" style="background: #ffe9c7">Long lesson over two hours</td><td>Maths</td></tr>
+  <tr><td>9:00</td><td>History</td></tr>
+  <tr><td>10:00</td><td colspan="2" style="background: #d9f2d9; text-align: center">Break for everyone</td></tr>
+</table>
+
+<h2>As old pages write it: width in percent, attributes</h2>
+<table width="100%" border="1" cellpadding="6" cellspacing="2" bgcolor="#f8f8ff">
+  <tr bgcolor="#ccd8ff"><th width="20%">20%</th><th width="30%">30%</th><th>The rest</th></tr>
+  <tr>
+    <td valign="top">At the top</td>
+    <td valign="bottom" align="right">At the bottom, on the right</td>
+    <td>A long text wraps within its column, however wide that turns out to be, and the row grows
+      with it, while the other two cells of the row stay where they are told to.</td>
+  </tr>
+</table>
+
+<h2>A table inside a table</h2>
+<table class="grid">
+  <tr>
+    <td>Outside</td>
+    <td>
+      <table class="grid" style="border-collapse: collapse">
+        <tr><td>a</td><td>b</td></tr>
+        <tr><td>c</td><td>d</td></tr>
+      </table>
+    </td>
+    <td style="vertical-align: middle">In the middle, by itself</td>
+  </tr>
+</table>
+
+<h2>A table made with CSS, from ordinary elements</h2>
+<div class="css-table">
+  <div class="css-row">
+    <div class="css-cell">One</div><div class="css-cell">Two, somewhat longer</div>
+  </div>
+  <div class="css-row">
+    <div class="css-cell">Three, with more in it</div><div class="css-cell">Four</div>
+  </div>
+</div>
+
+<h2>A table that floats, with text around it</h2>
+<table class="grid" align="left" style="margin-right: 12px">
+  <tr><td>Left</td><td>side</td></tr>
+  <tr><td>of the</td><td>text</td></tr>
+</table>
+<p>This text goes beside the table, as beside any other float. Once it has gone past the bottom of the
+table, the lines take all of the width again, as they would around an image. There is enough of it here
+to see that happen at the width of a usual window, and a little more on top of that, for narrower ones.</p>
+</body>
+</html>
