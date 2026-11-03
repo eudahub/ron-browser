@@ -28,13 +28,16 @@ shows once its style sheets have come, for at most 10 seconds, and images show a
 built in, and a page with a bad certificate does not open: there is no way past it yet. Pages over
 plain HTTP do open, and the status bar says they are not secure.
 
+A local page takes its images and style sheets from its own directory and below it, and style sheets
+also over HTTPS, as many saved pages need them, but from no address in the user's own network. So a
+saved page can tell its server that it was opened. It loads no images from the network.
+
 Requests carry no cookies, no `Referer` and no language. A page on the network cannot link to local
 files, or make the browser reach addresses inside the user's own network, also through a name that
 leads there. A redirect cannot go from HTTPS to HTTP, and a page over HTTPS loads no images or style
 sheets over HTTP. What a server does not call CSS is not read as a style sheet. A page may be up to
 64 MB, an image 32 MB and a style sheet 16 MB, counted after unpacking, with at most 128 style sheets,
-and a request may take 60 seconds. Style sheets of a local page, like its images, only load from its
-own directory and below it. Forms are not sent yet, and pages in encodings that cpg-rs lacks, like Shift-JIS, come out wrong.
+and a request may take 60 seconds. Forms are not sent yet, and pages in encodings that cpg-rs lacks, like Shift-JIS, come out wrong.
 
 ## Selecting text
 

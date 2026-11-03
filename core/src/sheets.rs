@@ -155,6 +155,12 @@ impl Sheets {
     }
 }
 
+/// Whether a location is an address over HTTPS.
+#[must_use]
+pub fn is_https(location: &str) -> bool {
+    Url::parse(location).is_ok_and(|url| url.scheme() == "https")
+}
+
 /// Turns the bytes of a sheet into text. `charset` is what the server says, or empty.
 #[must_use]
 pub fn decode_css(bytes: &[u8], charset: &str) -> String {

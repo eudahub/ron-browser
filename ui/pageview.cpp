@@ -132,6 +132,23 @@ void PageView::forgetPage()
     holder->forgetImages();
 }
 
+bool PageView::setLocalPage(const std::string &utf8, const QString &directory, const QString &address)
+{
+    const QByteArray path = directory.toUtf8();
+    const QSize size = viewport()->size();
+    holder->incoming = ron_browser::open_page(utf8, rust::Str(path.constData(), static_cast<size_t>(path.size())),
+                                              static_cast<float>(size.width()), static_cast<float>(size.height()));
+    if (!(*holder->incoming)->has_waiting_sheets()) {
+        showIncoming();
+        return true;
+    }
+    const QByteArray bytes = address.toUtf8();
+    holder->sheetFetch = (*holder->incoming)->start_sheet_fetch(rust::Str(bytes.constData(), static_cast<size_t>(bytes.size())));
+    incomingAddress = address;
+    incomingWait.start();
+    return false;
+}
+
 void PageView::prepareFetchedPage(const std::string &utf8, const QString &address)
 {
     const QByteArray bytes = address.toUtf8();
@@ -161,12 +178,16 @@ bool PageView::incomingPageIsReady()
 
 void PageView::showIncomingPage()
 {
-    if (!holder->incoming) {
-        return;
+    if (holder->incoming) {
+        (*holder->incoming)->apply_sheets();
+        showIncoming();
     }
+}
+
+void PageView::showIncoming()
+{
     forgetPage();
     holder->sheetFetch.reset();
-    (*holder->incoming)->apply_sheets();
     holder->page = std::move(holder->incoming);
     holder->incoming.reset();
     verticalScrollBar()->setValue(0);

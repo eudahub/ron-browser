@@ -7,11 +7,12 @@ use ron::html::{Document, NodeId, NodeKind, Tag, parse};
 
 use crate::images::{DecodedImage, ImageStore, NoResources, ResourceLoader};
 use crate::layout::{FontSpec, Layout, TextMeasurer, layout};
-use crate::sheets::{SheetRequest, Sheets, decode_css};
+use crate::sheets::{SheetRequest, Sheets, decode_css, is_https};
 
 pub struct Page {
     document: Document,
     sheets: Sheets,
+    waiting_sheets: Vec<SheetRequest>,
     styles: Styles,
     viewport: Viewport,
     layout: Layout,
@@ -58,6 +59,7 @@ impl Page {
         viewport: Viewport,
     ) -> Self {
         let document = parse(utf8);
+        let mut waiting_sheets = Vec::new();
         let mut sheets = Sheets::of_document(&document, None);
         // Each round brings what the sheets of the last one import, which has a limit.
         loop {
@@ -66,7 +68,10 @@ impl Page {
                 break;
             }
             for request in requests {
-                if let Some(bytes) = loader.load(&request.location) {
+                // These can only come through the network, which takes a while.
+                if is_https(&request.location) {
+                    waiting_sheets.push(request);
+                } else if let Some(bytes) = loader.load(&request.location) {
                     sheets.add(request.slot, &decode_css(&bytes, ""));
                 }
             }
@@ -75,6 +80,7 @@ impl Page {
         let mut page = Self {
             document,
             sheets,
+            waiting_sheets,
             styles,
             viewport,
             layout: Layout::default(),
@@ -95,6 +101,7 @@ impl Page {
         Self {
             document,
             sheets,
+            waiting_sheets: Vec::new(),
             styles,
             viewport,
             layout: Layout::default(),
@@ -102,9 +109,17 @@ impl Page {
         }
     }
 
+    /// Whether a local page names style sheets that can only come over HTTPS.
+    #[must_use]
+    pub fn has_waiting_sheets(&self) -> bool {
+        !self.waiting_sheets.is_empty()
+    }
+
     /// The style sheets to read that have not been asked for yet.
     pub fn sheet_requests(&mut self) -> Vec<SheetRequest> {
-        self.sheets.requests()
+        let mut requests = std::mem::take(&mut self.waiting_sheets);
+        requests.extend(self.sheets.requests());
+        requests
     }
 
     /// Adds a style sheet that came. It takes [`Self::apply_sheets`] to count.

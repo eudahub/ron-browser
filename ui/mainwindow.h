@@ -36,8 +36,10 @@ public:
 
 private:
     void chooseFile();
+    enum class LocalLoad { Failed, Shown, Waiting };
     // Reads a local file into the view. When it cannot be read, says so and leaves what is shown.
-    bool loadLocalFile(const QString &address, const QString &path);
+    // A page with style sheets on the network waits for them, and goes on through fetchTimer.
+    LocalLoad loadLocalFile(const QString &address, const QString &path);
     // Goes to a new place, as the user asked. Only this adds to the history. `askingPage` is the
     // address of the page whose link it is, or empty.
     void goTo(const QString &address, const QString &fragment, const QString &askingPage = QString());

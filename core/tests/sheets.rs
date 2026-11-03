@@ -11,7 +11,7 @@ use ron_browser_core::images::{ImageStore, ResourceLoader};
 use ron_browser_core::layout::{FontSpec, ItemKind, TextMeasurer};
 use ron_browser_core::net::SheetFetch;
 use ron_browser_core::page::Page;
-use ron_browser_core::sheets::decode_css;
+use ron_browser_core::sheets::{SheetRequest, decode_css};
 
 #[derive(Default)]
 struct Measurer {
@@ -349,6 +349,66 @@ fn a_secure_page_reads_no_plain_sheets() {
     read_sheets(&mut page, address);
     page.lay_out(500.0, 400.0, &mut Measurer::default());
     assert_ne!(text_color(&page), RED);
+}
+
+#[test]
+fn a_local_page_waits_for_its_sheets_over_https_only() {
+    let (mut page, asked) = open(
+        "<link rel=stylesheet href=a.css><link rel=stylesheet href=https://example.com/b.css>\
+         <link rel=stylesheet href=http://example.com/c.css><p>x",
+        &[("a.css", "p{color:red}")],
+    );
+    assert_eq!(text_color(&page), RED);
+    assert!(page.has_waiting_sheets());
+    assert!(
+        !asked.iter().any(|url| url.contains("example.com/b")),
+        "{asked:?}"
+    );
+    let requests = page.sheet_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].location, "https://example.com/b.css");
+    assert!(!page.has_waiting_sheets());
+    // When it comes, it counts in its place in the page.
+    page.add_sheet(requests[0].slot, "p{color:lime}");
+    page.apply_sheets();
+    page.lay_out(500.0, 400.0, &mut Measurer::default());
+    assert_eq!(text_color(&page), LIME);
+    let (without, _) = open("<link rel=stylesheet href=a.css><p>x", &[("a.css", "p{}")]);
+    assert!(!without.has_waiting_sheets());
+}
+
+#[test]
+fn a_local_page_reaches_only_public_addresses() {
+    let server = serve();
+    let local = "file:///a/page.html";
+    let mut fetch = SheetFetch::start(
+        local,
+        vec![
+            SheetRequest {
+                slot: 1,
+                location: format!("{server}/css/a.css"),
+            },
+            SheetRequest {
+                slot: 2,
+                location: "https://127.0.0.1:1/a.css".to_owned(),
+            },
+            SheetRequest {
+                slot: 3,
+                location: "https://localhost:1/a.css".to_owned(),
+            },
+            SheetRequest {
+                slot: 4,
+                location: "file:///etc/passwd".to_owned(),
+            },
+        ],
+    );
+    let start = Instant::now();
+    while !fetch.is_done() {
+        assert!(fetch.poll().is_empty());
+        assert!(start.elapsed() < Duration::from_secs(10));
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(fetch.poll().is_empty());
 }
 
 #[test]

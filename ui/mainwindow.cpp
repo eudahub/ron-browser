@@ -124,20 +124,29 @@ bool MainWindow::isLoading() const
     return isFetching() || view->isLoadingImages();
 }
 
-bool MainWindow::loadLocalFile(const QString &address, const QString &path)
+MainWindow::LocalLoad MainWindow::loadLocalFile(const QString &address, const QString &path)
 {
     const DecodedPage decoded = loadPage(path, forcedEncoding);
     if (!decoded.error.isEmpty()) {
         statusBar()->showMessage(tr("Cannot open %1: %2").arg(path, decoded.error));
-        return false;
+        return LocalLoad::Failed;
     }
-    view->setPage(decoded.utf8, QFileInfo(path).absolutePath());
+    const QString status = tr("Encoding: %1 (%2)").arg(QString::fromStdString(decoded.encoding), decoded.encodingSource);
+    if (!view->setLocalPage(decoded.utf8, QFileInfo(path).absolutePath(), address)) {
+        fetchedAddress = address;
+        fetchedStatus = status;
+        fetchTimer->start();
+        pageStatus = tr("Loading %1").arg(shownAddress(address));
+        statusBar()->showMessage(pageStatus);
+        updateNavigation();
+        return LocalLoad::Waiting;
+    }
     loadedAddress = address;
     const QString title = view->pageTitle();
     setWindowTitle(title.isEmpty() ? QUrl(address).fileName() : title);
-    pageStatus = tr("Encoding: %1 (%2)").arg(QString::fromStdString(decoded.encoding), decoded.encodingSource);
+    pageStatus = status;
     statusBar()->showMessage(pageStatus);
-    return true;
+    return LocalLoad::Shown;
 }
 
 void MainWindow::goTo(const QString &address, const QString &fragment, const QString &askingPage)
@@ -147,13 +156,13 @@ void MainWindow::goTo(const QString &address, const QString &fragment, const QSt
     const QByteArray bytes = address.toUtf8();
     const QString path = asQString(ron_browser::local_path(asStr(bytes)));
     if (address != loadedAddress) {
+        fetchFragment = fragment;
+        fetchScroll.reset();
         if (path.isEmpty()) {
-            fetchFragment = fragment;
-            fetchScroll.reset();
             startFetch(address, askingPage);
             return;
         }
-        if (!loadLocalFile(address, path)) {
+        if (loadLocalFile(address, path) != LocalLoad::Shown) {
             return;
         }
     }
@@ -239,7 +248,8 @@ void MainWindow::showFetchedPage()
     const QString address = fetchedAddress;
     loadedAddress = address;
     const QString title = view->pageTitle();
-    setWindowTitle(title.isEmpty() ? QUrl(address).host() : title);
+    const QUrl url(address);
+    setWindowTitle(!title.isEmpty() ? title : url.isLocalFile() ? url.fileName() : url.host());
     pageStatus = fetchedStatus;
     statusBar()->showMessage(pageStatus);
     if (fetchScroll) {
@@ -251,7 +261,10 @@ void MainWindow::showFetchedPage()
         history->visit(asStr(addressBytes), asStr(fragmentBytes));
         view->scrollToFragment(fetchFragment);
     }
-    view->fetchImages(address);
+    // A local page has read its local images, and does not reach for others.
+    if (!url.isLocalFile()) {
+        view->fetchImages(address);
+    }
     updateNavigation();
 }
 
@@ -283,12 +296,16 @@ void MainWindow::showCurrentEntry()
     const QByteArray bytes = address.toUtf8();
     const QString path = asQString(ron_browser::local_path(asStr(bytes)));
     const int scroll = history->current_scroll();
+    fetchScroll = scroll;
     if (address != loadedAddress && path.isEmpty()) {
-        fetchScroll = scroll;
         startFetch(address, QString());
         return;
     }
-    if (address == loadedAddress || loadLocalFile(address, path)) {
+    const LocalLoad load = address == loadedAddress ? LocalLoad::Shown : loadLocalFile(address, path);
+    if (load == LocalLoad::Waiting) {
+        return;
+    }
+    if (load == LocalLoad::Shown) {
         view->setScrollY(scroll);
     }
     updateNavigation();
@@ -303,10 +320,10 @@ void MainWindow::reload()
     const int scroll = view->scrollY();
     const QByteArray bytes = loadedAddress.toUtf8();
     const QString path = asQString(ron_browser::local_path(asStr(bytes)));
+    fetchScroll = scroll;
     if (path.isEmpty()) {
-        fetchScroll = scroll;
         startFetch(loadedAddress, QString());
-    } else if (loadLocalFile(loadedAddress, path)) {
+    } else if (loadLocalFile(loadedAddress, path) == LocalLoad::Shown) {
         view->setScrollY(scroll);
     }
 }

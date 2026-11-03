@@ -160,6 +160,8 @@ mod ffi {
         fn take_sheets(self: &mut Page, fetch: &mut SheetFetch, page_address: &str) -> bool;
         /// Computes styles again, with the sheets that have come.
         fn apply_sheets(self: &mut Page);
+        /// Whether a local page names style sheets that can only come over HTTPS.
+        fn has_waiting_sheets(self: &Page) -> bool;
 
         type ImageFetch;
 
@@ -374,6 +376,10 @@ impl Page {
 
     fn apply_sheets(&mut self) {
         self.page.apply_sheets();
+    }
+
+    fn has_waiting_sheets(&self) -> bool {
+        self.page.has_waiting_sheets()
     }
 
     fn start_image_fetch(&self, page_address: &str) -> Box<ImageFetch> {

@@ -43,6 +43,9 @@ pub enum Asker<'a> {
     User,
     /// The page at this address.
     Page(&'a str),
+    /// A local page, for what it needs without the user having chosen it. The user trusts such a
+    /// page only as far as opening it, and it may have come from anywhere.
+    LocalPage,
 }
 
 /// What came from an address.
@@ -166,6 +169,7 @@ fn agent(public_only: bool) -> &'static Agent {
 fn must_be_public(asker: Asker<'_>, url: &Url) -> bool {
     match asker {
         Asker::User => false,
+        Asker::LocalPage => true,
         Asker::Page(page) => Url::parse(page).is_ok_and(|page| {
             matches!(page.scheme(), "http" | "https") && page.host() != url.host()
         }),
@@ -481,9 +485,14 @@ impl SheetFetch {
             .map(|request| {
                 let page = page_address.to_owned();
                 let job: Job<(u32, String)> = Box::new(move || {
+                    let asker = if page.starts_with("file:") {
+                        Asker::LocalPage
+                    } else {
+                        Asker::Page(&page)
+                    };
                     let fetched = fetch_limited(
                         &request.location,
-                        Asker::Page(&page),
+                        asker,
                         "text/css,*/*;q=0.1",
                         MAX_SHEET_BYTES,
                     )
