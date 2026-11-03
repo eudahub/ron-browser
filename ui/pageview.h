@@ -10,6 +10,7 @@
 #include <memory>
 #include <string>
 
+class QPixmap;
 class QTimer;
 class QMouseEvent;
 
@@ -33,6 +34,8 @@ public:
     // Puts the selected text on the clipboard.
     void copySelection();
     void selectAll();
+    // The whole page without scroll bars, at least this large.
+    QPixmap grabWholePage(QSize atLeast);
     // For a test of what a drag gives, without a mouse: selects as a drag between two points
     // of the page would, and returns the text.
     QString selectForTest(QPointF from, QPointF to, int clicks);

@@ -6,6 +6,7 @@
 #include <QClipboard>
 #include <QMouseEvent>
 #include <QPaintEvent>
+#include <QPixmap>
 #include <QStyleHints>
 #include <QPainter>
 #include <QResizeEvent>
@@ -198,6 +199,20 @@ QString PageView::selectForTest(QPointF from, QPointF to, int clicks)
     viewport()->update();
     const rust::String text = page->selected_text();
     return QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size()));
+}
+
+QPixmap PageView::grabWholePage(QSize atLeast)
+{
+    setFrameShape(QFrame::NoFrame);
+    setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    resize(atLeast);
+    layOutNow();
+    if (holder->page) {
+        resize(std::max(atLeast.width(), qCeil((*holder->page)->layout_width())),
+               std::max(atLeast.height(), qCeil((*holder->page)->layout_height())));
+    }
+    return viewport()->grab();
 }
 
 void PageView::layOutNow()

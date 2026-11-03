@@ -4,6 +4,8 @@
 #include <QApplication>
 #include <QCoreApplication>
 #include <QLineF>
+#include <QPixmap>
+#include <QSize>
 #include <QStringList>
 
 #include <ron-browser-bridge/src/lib.rs.h>
@@ -19,7 +21,9 @@ namespace {
 const char usage[] =
     "usage: ron-browser [--encoding NAME] [FILE]\n"
     "       ron-browser [--encoding NAME] --print FILE\n"
-    "       ron-browser [--encoding NAME] --screenshot PNG [--select X1 Y1 X2 Y2] FILE\n";
+    "       ron-browser [--encoding NAME] --screenshot PNG [--select X1 Y1 X2 Y2] FILE\n"
+    "       ron-browser [--encoding NAME] --page-shot PNG [--size WIDTHxHEIGHT] FILE\n"
+    "       ron-browser [--encoding NAME] --decode FILE\n";
 
 int printPage(const QString &path, const std::string &encoding)
 {
@@ -35,6 +39,33 @@ int printPage(const QString &path, const std::string &encoding)
     return 0;
 }
 
+// Writes the page as UTF-8, for tools that show it to something else.
+int decodePage(const QString &path, const std::string &encoding)
+{
+    const DecodedPage decoded = loadPage(path, encoding);
+    if (!decoded.error.isEmpty()) {
+        std::cerr << path.toStdString() << ": " << decoded.error.toStdString() << "\n";
+        return 1;
+    }
+    std::cout << decoded.utf8;
+    return 0;
+}
+
+// A shot of the whole page alone, without the window around it, for comparing with others.
+int shootPage(const QString &path, const std::string &encoding, const QString &out, QSize size)
+{
+    const DecodedPage decoded = loadPage(path, encoding);
+    if (!decoded.error.isEmpty()) {
+        std::cerr << path.toStdString() << ": " << decoded.error.toStdString() << "\n";
+        return 1;
+    }
+    PageView view;
+    view.resize(size);
+    view.show();
+    view.setPage(decoded.utf8);
+    return view.grabWholePage(size).save(out) ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char *argv[])
@@ -43,6 +74,9 @@ int main(int argc, char *argv[])
     QString path;
     QString screenshot;
     bool print = false;
+    bool decode = false;
+    QString pageShot;
+    QSize pageShotSize(900, 700);
     std::optional<QLineF> selection;
     for (int index = 1; index < argc; ++index) {
         const std::string argument = argv[index];
@@ -54,8 +88,17 @@ int main(int argc, char *argv[])
             selection = QLineF(std::stod(argv[index + 1]), std::stod(argv[index + 2]),
                                std::stod(argv[index + 3]), std::stod(argv[index + 4]));
             index += 4;
+        } else if (argument == "--page-shot" && index + 1 < argc) {
+            pageShot = QString::fromLocal8Bit(argv[++index]);
+        } else if (argument == "--size" && index + 1 < argc) {
+            const QStringList parts = QString::fromLocal8Bit(argv[++index]).split(u'x');
+            if (parts.size() == 2) {
+                pageShotSize = QSize(parts[0].toInt(), parts[1].toInt());
+            }
         } else if (argument == "--print") {
             print = true;
+        } else if (argument == "--decode") {
+            decode = true;
         } else if (argument.rfind("-", 0) != 0 && path.isEmpty()) {
             path = QString::fromLocal8Bit(argument);
         } else {
@@ -63,17 +106,20 @@ int main(int argc, char *argv[])
             return 2;
         }
     }
-    if (print) {
+    if (print || decode) {
         if (path.isEmpty()) {
             std::cerr << usage;
             return 2;
         }
         // Needs no window, and so no display.
         QCoreApplication application(argc, argv);
-        return printPage(path, encoding);
+        return print ? printPage(path, encoding) : decodePage(path, encoding);
     }
 
     QApplication application(argc, argv);
+    if (!pageShot.isEmpty()) {
+        return shootPage(path, encoding, pageShot, pageShotSize);
+    }
     MainWindow window(encoding);
     window.show();
     if (!path.isEmpty()) {

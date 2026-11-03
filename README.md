@@ -48,6 +48,9 @@ build/ron-browser --screenshot out.png page.html
 build/ron-browser --encoding mazovia page.htm  # any encoding name cpg knows
 ```
 
+`tools/compare_with_firefox.py` shows pages in Firefox and in ron-browser, lists the rows that
+differ and leaves shots of both. It needs Firefox and Pillow, and uses its own empty Firefox profile.
+
 The Rust tests need no Qt. The tests of the window run without a display:
 
 ```sh
