@@ -66,11 +66,12 @@ int main(int argc, char *argv[])
 
     QApplication application(argc, argv);
     MainWindow window(encoding);
+    window.show();
     if (!path.isEmpty()) {
         window.openPage(path);
     }
-    window.show();
     if (!screenshot.isEmpty()) {
+        window.layOutNow();
         QCoreApplication::processEvents();
         return window.grab().save(screenshot) ? 0 : 1;
     }

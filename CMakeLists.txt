@@ -39,8 +39,14 @@ add_executable(ron-browser
     ui/mainwindow.cpp
     ui/mainwindow.h
     ui/pageloader.cpp
-    ui/pageloader.h)
-target_include_directories(ron-browser PRIVATE "${CARGO_TARGET_DIR}/cxxbridge")
+    ui/pageloader.h
+    ui/pageview.cpp
+    ui/pageview.h
+    ui/textmeasure.cpp
+    ui/textmeasure.h)
+target_include_directories(ron-browser PRIVATE
+    "${CARGO_TARGET_DIR}/cxxbridge"
+    "${CMAKE_SOURCE_DIR}/bridge/include")
 target_compile_definitions(ron-browser PRIVATE
     CPG_LANGUAGES_FILE="${CPG_LANGUAGES_FILE}"
     CPG_MODELS_DIR="${CPG_MODELS_DIR}")

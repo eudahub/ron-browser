@@ -18,7 +18,7 @@ fn reads_the_title() {
 
 #[test]
 fn blocks_take_their_own_lines_and_inline_text_stays_together() {
-    assert_eq!(text("<p>a</p><p>b</p>"), "a\nb");
+    assert_eq!(text("<p>a</p><p>b</p>"), "a\n\nb");
     assert_eq!(text("a<b>b</b><i>c</i> d"), "abc d");
     assert_eq!(text("a<div>b</div>c"), "a\nb\nc");
     assert_eq!(text("a<br>b"), "a\nb");
@@ -28,7 +28,7 @@ fn blocks_take_their_own_lines_and_inline_text_stays_together() {
 #[test]
 fn white_space_collapses_except_where_it_counts() {
     assert_eq!(text("  a \n\t b  "), "a b");
-    assert_eq!(text("<p> a </p> <p> b </p>"), "a\nb");
+    assert_eq!(text("<p> a </p> <p> b </p>"), "a\n\nb");
     assert_eq!(text("a <b> b</b>"), "a b");
     assert_eq!(text("<pre>a  b\n c</pre>"), "a  b\n c");
 }

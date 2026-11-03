@@ -5,7 +5,7 @@
 
 #include <string>
 
-class QPlainTextEdit;
+class PageView;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -14,11 +14,13 @@ public:
     explicit MainWindow(std::string forcedEncoding);
 
     void openPage(const QString &path);
+    // For a screenshot, which must not wait for the delay after a resize.
+    void layOutNow();
 
 private:
     void chooseFile();
 
-    QPlainTextEdit *view;
+    PageView *view;
     std::string forcedEncoding;
 };
 
